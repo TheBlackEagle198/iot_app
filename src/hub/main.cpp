@@ -9,15 +9,20 @@
 #include "Payload.h"
 #include "CronJob.h"
 #include "CronJobQueue.h"
+#include "Timer.h"
 
 /// @brief MQTT setup
 #define INCOMING_TOPIC "B2H"
 #define OUTGOING_TOPIC "H2B"
 #define FORCE_UPDATE "forceUpdate"
 
+#define LONG_PRESS_TIME 1000
+#define CONNECT_MODE_EXPIRATION 10000
+
 /// @brief pin setup
 #define PIN_RADIO_CE  4
 #define PIN_RADIO_CNS 2
+#define PIN_CONNECT_BUTTON 5
 
 // global constants ************************************************************
 const char* mqttServer = "192.168.1.252";
@@ -90,6 +95,12 @@ MQTTClient mqttClient;
 GlobalToNodeIdsMap<255> globalToNodeIdsMap;
 CronJobQueue<10> cronJobs;
 
+bool isInConnectMode = false;
+uint8_t connectButtonCurrentState = LOW;
+uint8_t connectButtonLastState = HIGH;
+Timer connectModeExpirationTimer(CONNECT_MODE_EXPIRATION);
+Timer longPressTimer(LONG_PRESS_TIME);
+
 // function declarations *******************************************************
 
 void connectToBroker();
@@ -145,18 +156,19 @@ void setup() {
     initCronJobs();
     initRadio();
 
+    pinMode(PIN_CONNECT_BUTTON, INPUT_PULLUP);
+
     Serial.println("Setup complete!");
 }
 
 void loop() {
     cronJobs.runJobs();
-    delay(10);
 }
 int last = 0;
 // function definitions ********************************************************
 void initCronJobs() {
     // deals with mqtt and wifi
-    cronJobs.addJob(new CronJob(1, []() {
+    cronJobs.addJob(new CronJob(10, []() {
         if (!mqttClient.loop()) {
             Serial.println("MQTT connection lost! Attempting to reconnect...");
             // the mqtt client connection has been lost
@@ -174,6 +186,25 @@ void initCronJobs() {
         processRadioData();
         mesh.update();
         mesh.DHCP();
+    }));
+    cronJobs.addJob(new CronJob(1, []() {
+        connectButtonCurrentState = digitalRead(PIN_CONNECT_BUTTON);
+        if (connectButtonLastState == HIGH && connectButtonCurrentState == LOW) {
+            longPressTimer.reset();
+        } else if (connectButtonCurrentState == HIGH && connectButtonLastState == LOW) {
+            if (longPressTimer.elapsed()) {
+                Serial.println("Long press detected");
+                isInConnectMode = !isInConnectMode;
+                connectModeExpirationTimer.reset();
+            }
+        }
+        connectButtonLastState = connectButtonCurrentState;
+    }));
+    cronJobs.addJob(new CronJob(1, []() {
+        if (isInConnectMode && connectModeExpirationTimer.elapsed()) {
+            Serial.println("Connect mode expired!");
+            isInConnectMode = false;
+        }
     }));
 }
 
@@ -241,7 +272,7 @@ void processRadioData() {
         Payload incomingMsg;
         String subTopic;
 
-        if (header.type == (unsigned char)RadioType::GID_NEGOTIATION) {
+        if (header.type == (unsigned char)RadioType::GID_NEGOTIATION && isInConnectMode) {
             GLOBAL_ID_T GID;
             network.read(header, &GID, sizeof(GID));
             Serial.print("Got a node id request from a module with gid 0x");
