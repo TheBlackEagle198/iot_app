@@ -6,7 +6,8 @@ PotentiometerModule module(
     8, // cs pin
     2, // connect button pin
     A0,// potentiometer pin
-    100); // threshold
+    100,
+    4); // threshold
 
 /// main code ******************************************************************
 void setup()

@@ -13,17 +13,19 @@ private:
 
     POTENTIOMETER_T threshold;
 public:
-    PotentiometerModule(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t connectButtonPin, uint8_t potentiometerPin, POTENTIOMETER_T threshold) : Module(defaultGlobalId, cePin, csPin, connectButtonPin), potentiometerPin(potentiometerPin), threshold(threshold) {}
+    PotentiometerModule(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t connectButtonPin, uint8_t potentiometerPin, POTENTIOMETER_T threshold, uint8_t statusLedPin) : Module(defaultGlobalId, cePin, csPin, connectButtonPin, statusLedPin), potentiometerPin(potentiometerPin), threshold(threshold) {}
 
     void initSubmodule() override {}
     
     bool shouldSend() override {
         readPot = analogRead(potentiometerPin);
-        Serial.print("current: ");
-        Serial.print(readPot);
-        Serial.print(" last: ");
-        Serial.print(potLastSent);
-        if (abs(readPot - potLastSent) > threshold) {
+        if (abs((int)readPot - (int)potLastSent) > threshold) {
+            Serial.print("current: ");
+            Serial.print(readPot);
+            Serial.print(" last: ");
+            Serial.println(potLastSent);
+
+            Serial.println(abs((int)readPot - (int)potLastSent));
             potLastSent = readPot;
             return true;
         } else {
