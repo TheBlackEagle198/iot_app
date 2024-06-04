@@ -4,9 +4,9 @@
 #include "RadioType.h"
 #include "Payload.h"
 
-Module::Module(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin) :
-    radio(cePin, csPin), network(radio), mesh(radio, network), connectButtonPin(buttonPin),
-    connectButtonTimer(1000), sendTimer(1000) {
+Module::Module(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin, uint8_t statusLedPin) :
+    radio(cePin, csPin), network(radio), mesh(radio, network), connectButtonPin(buttonPin), statusLedPin(statusLedPin),
+    connectButtonTimer(1000), sendTimer(1000), statusLedBlinkTimer(100) {
     globalId = this->readGIDFromEEPROM();
     if (globalId == 0) {
         globalId = defaultGlobalId;
@@ -115,6 +115,7 @@ bool Module::initRadio() {
 
 void Module::init() {
     initSubmodule();
+    pinMode(statusLedPin, OUTPUT);
     pinMode(connectButtonPin, INPUT_PULLUP);
     currentState = ConnectionState::NOT_CONNECTED;
 }
@@ -126,6 +127,13 @@ void Module::run() {
                 switchState(ConnectionState::NOT_CONNECTED);
                 return;
             }
+            if (!ranOnce) {
+                digitalWrite(statusLedPin, LOW);
+                ranOnce = true;
+            }
+            if (statusLedBlinkTimer.elapsed()) {
+                digitalWrite(statusLedPin, LOW);
+            }
             mesh.update();
             if (network.available()) {
                 RF24NetworkHeader header;
@@ -136,11 +144,15 @@ void Module::run() {
                 case SendStrategy::SEND_ON_CHANGE:
                     if (shouldSend()) {
                         sendData();
+                        digitalWrite(statusLedPin, HIGH);
+                        statusLedBlinkTimer.reset();
                     }
                     break;
                 case SendStrategy::SEND_ALWAYS:
                     if (sendTimer.elapsed()) {
                         sendData();
+                        digitalWrite(statusLedPin, HIGH);
+                        statusLedBlinkTimer.reset();
                         sendTimer.reset();
                     }
                     break;
@@ -148,6 +160,7 @@ void Module::run() {
             break;
         case ConnectionState::NOT_CONNECTED:
             if (!ranOnce) {
+                digitalWrite(statusLedPin, HIGH);
                 mesh.begin();
                 ranOnce = true;
                 if (!radio.isChipConnected()) {

@@ -48,8 +48,11 @@ protected:
     Timer sendTimer;
     ConnectionState currentState = NOT_CONNECTED;
     bool ranOnce = false;
+
+    uint8_t statusLedPin;
+    Timer statusLedBlinkTimer;
 public:
-    Module(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin);
+    Module(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin, uint8_t statusledPin);
 
     virtual void initSubmodule() = 0;
 
