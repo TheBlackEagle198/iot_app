@@ -1,6 +1,6 @@
 #include "BooleanModule.h"
 
-BooleanModule module(0x0, 7, 8, 2);
+BooleanModule module(0x0, 7, 8, 2, 4);
 
 /// main code ******************************************************************
 void setup()

@@ -11,7 +11,7 @@ private:
     uint8_t prevButtonState = 0;
 
 public:
-    BooleanModule(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin) : Module(defaultGlobalId, cePin, csPin, buttonPin) {}
+    BooleanModule(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin, uint8_t statusLedPin) : Module(defaultGlobalId, cePin, csPin, buttonPin, statusLedPin) {}
 
     void initSubmodule() override {
         pinMode(BUTTON, INPUT_PULLUP);
