@@ -20,23 +20,27 @@ public:
     bool shouldSend() override {
         readPot = analogRead(potentiometerPin);
         if (abs((int)readPot - (int)potLastSent) > threshold) {
-            Serial.print("current: ");
-            Serial.print(readPot);
-            Serial.print(" last: ");
-            Serial.println(potLastSent);
-
-            Serial.println(abs((int)readPot - (int)potLastSent));
-            potLastSent = readPot;
             return true;
         } else {
             return false;
         }
     }
 
-    void sendData() override {
+    void sendData(bool force) override {
         Payload payload;
         payload.global_id = globalId;
-        payload.data = analogRead(potentiometerPin);
+        payload.data = readPot;
+        potLastSent = readPot;
         safeWriteToMesh(&payload, (uint8_t)RadioType::POTENTIOMETER, sizeof(payload));
+    }
+
+    void handleRadioMessage(RF24NetworkHeader header, uint16_t incomingBytesCount) override {
+        if (header.type == (uint8_t)RadioType::CHANGE_THRESHOLD) {
+            char newIntervalBuffer[10];
+            network.read(header, &newIntervalBuffer, incomingBytesCount);
+            uint32_t newThreshold;
+            newThreshold = strtoul(newIntervalBuffer, NULL, 10); // convert the string to an integer (base 10)
+            threshold = newThreshold;
+        }
     }
 };

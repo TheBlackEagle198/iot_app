@@ -27,10 +27,16 @@ public:
         }
     }
 
-    void sendData() override {
+    void sendData(bool force) override {
         Payload payload;
         payload.global_id = globalId;
         payload.data = digitalRead(BUTTON);
         safeWriteToMesh(&payload, (uint8_t)RadioType::BOOLEAN, sizeof(payload));
+    }
+    
+    void handleRadioMessage(RF24NetworkHeader header) override {
+        if (header.type == (uint8_t)RadioType::CHANGE_DELAY) {
+            network.read(header, &sendInterval, sizeof(sendInterval));
+        }
     }
 };

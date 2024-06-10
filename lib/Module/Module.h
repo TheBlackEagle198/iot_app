@@ -5,6 +5,7 @@
 #include <RF24Mesh.h>
 #include "GlobalConfig.h"
 #include "Timer.h"
+#include "SendStrategy.h"
 
 #define DEFAULT_INTERVAL 1000 ///< default interval for sending updates to the master node
 
@@ -21,11 +22,6 @@ enum ConnectionState {
     NOT_CONNECTED,
     CONNECTING,
     RETRY_CONNECTION
-};
-
-enum class SendStrategy {
-    SEND_ON_CHANGE,
-    SEND_ALWAYS
 };
 
 class Module {
@@ -45,12 +41,15 @@ protected:
 
     // stuff for sending data
     SendStrategy sendStrategy = SendStrategy::SEND_ON_CHANGE;
+    uint32_t sendInterval = DEFAULT_INTERVAL;
     Timer sendTimer;
     ConnectionState currentState = NOT_CONNECTED;
     bool ranOnce = false;
 
     uint8_t statusLedPin;
     Timer statusLedBlinkTimer;
+
+    Timer waitForMasterTimer;
 public:
     Module(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin, uint8_t statusledPin);
 
@@ -93,5 +92,7 @@ public:
     virtual bool shouldSend() = 0;
 
     // @brief sends the data to the master node
-    virtual void sendData() = 0;
+    virtual void sendData(bool force = false) = 0;
+
+    virtual void handleRadioMessage(RF24NetworkHeader header, uint16_t incomingBytesCount) = 0;
 };

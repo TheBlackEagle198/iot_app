@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 /// @brief environment setup
 #define PRODUCTION 0
 #define DEVELOPMENT 1

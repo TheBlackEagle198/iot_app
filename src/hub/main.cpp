@@ -10,14 +10,18 @@
 #include "CronJob.h"
 #include "CronJobQueue.h"
 #include "Timer.h"
+#include "SendStrategy.h"
 
 /// @brief MQTT setup
 #define INCOMING_TOPIC "B2H"
 #define OUTGOING_TOPIC "H2B"
-#define FORCE_UPDATE "forceUpdate"
+#define COMMAND_FORCE_UPDATE "force_update"
+#define COMMAND_CHANGE_STRATEGY "strategy"
+#define COMMAND_CHANGE_SEND_INTERVAL "send_interval"
+#define COMMAND_CHANGE_THRESHOLD "threshold"
 
 #define LONG_PRESS_TIME 1000
-#define CONNECT_MODE_EXPIRATION 10000
+#define CONNECT_MODE_EXPIRATION 20000
 
 /// @brief pin setup
 #define PIN_RADIO_CE  4
@@ -31,6 +35,14 @@ const String hubID = "00:26:85:22";
 
 const String apSSID = "HUB" + hubID + "_AP";
 const String apPassword = "password";
+
+enum class CommandType {
+    FORCE_UPDATE,
+    CHANGE_STRATEGY,
+    CHANGE_THRESHOLD,
+    CHANGE_DELAY,
+    LAST
+};
 
 template <int MAX_SIZE>
 class GlobalToNodeIdsMap {
@@ -134,8 +146,13 @@ uint16_t getNewNodeID();
 /// @brief Converts a global id to a string with hex values separated by colons
 String globalIdToString(GLOBAL_ID_T gid);
 
+/// @brief Converts a string with hex values separated by colons to a global id
+GLOBAL_ID_T stringToGlobalId(const String& buffer);
+
 /// @brief Initializes the cron jobs
 void initCronJobs();
+
+CommandType getCommand(String &commandString);
 
 // main program ***************************************************************
 void setup() {
@@ -194,7 +211,7 @@ void initCronJobs() {
         } else if (connectButtonCurrentState == HIGH && connectButtonLastState == LOW) {
             if (longPressTimer.elapsed()) {
                 Serial.println("Long press detected");
-                isInConnectMode = !isInConnectMode;
+                isInConnectMode = true;
                 connectModeExpirationTimer.reset();
             }
         }
@@ -216,6 +233,8 @@ void safeWriteToMesh(const void *data, uint8_t msg_type, size_t size, uint8_t re
         // If a write fails, check connectivity to the mesh network
         if (!mesh.checkConnection())
         {
+            Serial.print("RF24 failure reason: ");
+            radio.printDetails();
             // refresh the network address
             Serial.println("Renewing Address");
             if (mesh.renewAddress() == MESH_DEFAULT_ADDRESS)
@@ -239,15 +258,52 @@ void safeWriteToMesh(const void *data, uint8_t msg_type, size_t size, uint8_t re
 void messageReceivedCb(String &topic, String &payload) {
     Serial.println("Incoming message for topic " + topic + ":\n" + payload);
     
-    // // parse the incoming topic such that we get everything after INCOMING_TOPIC
-    // // has a +1 because of the last /
-    // startIndex = topic.indexOf(INCOMING_TOPIC)+strlen(INCOMING_TOPIC) + 1;
-    // char a[100] usefulTopic;
-    // String usefulTopic(topic.c_str() + startIndex)
-    // if (usefulTopic.indexOf(FORCE_UPDATE) > 0) {
-    //     // send a radio message to the module
+    // parse the incoming topic such that we get everything after INCOMING_TOPIC
+    uint8_t moduleGidStart = topic.indexOf(INCOMING_TOPIC) + strlen(INCOMING_TOPIC) + 1;
+    uint8_t commandStart = topic.indexOf("/", moduleGidStart) + 1;
+
+    String moduleGidStr = topic.substring(moduleGidStart, commandStart - 1);
+    String command = topic.substring(commandStart);
+
+    Serial.println("Module GID: " + moduleGidStr);
+    GLOBAL_ID_T gid = stringToGlobalId(moduleGidStr);
+    Serial.println(gid, HEX);
+
+    uint16_t nodeId;
+    if (globalToNodeIdsMap.getByGID(gid, nodeId)) {
+        Serial.println("Found node id: " + String(nodeId));
+        // send the command to the module
         
-    // }
+        CommandType commandType = getCommand(command);
+        uint8_t empty = 0;
+        SendStrategy newStrategy = SendStrategy::SEND_ON_CHANGE;
+        switch (commandType) {
+            case CommandType::FORCE_UPDATE:
+                safeWriteToMesh(&empty, (uint8_t)RadioType::GET, sizeof(empty), nodeId);
+                break;
+            case CommandType::CHANGE_STRATEGY:
+                if (payload == "on_change") {
+                    newStrategy = SendStrategy::SEND_ON_CHANGE;
+                    safeWriteToMesh(&newStrategy, (uint8_t)RadioType::CHANGE_STRATEGY, sizeof(newStrategy), nodeId);
+                } else if (payload == "always") {
+                    newStrategy = SendStrategy::SEND_ALWAYS;
+                    safeWriteToMesh(&newStrategy, (uint8_t)RadioType::CHANGE_STRATEGY, sizeof(newStrategy), nodeId);
+                }
+                break;
+            case CommandType::CHANGE_DELAY:
+                safeWriteToMesh(payload.c_str(), (uint8_t)RadioType::CHANGE_DELAY, payload.length(), nodeId);
+                break;
+            case CommandType::CHANGE_THRESHOLD:
+                safeWriteToMesh(payload.c_str(), (uint8_t)RadioType::CHANGE_THRESHOLD, payload.length(), nodeId);
+                break;
+            default:
+                break;
+        }
+        Serial.println("Command sent!");
+    } else {
+        Serial.println("Node id not found!");
+    }
+
 }
 
 void printNetworkStatus() {
@@ -261,7 +317,7 @@ void printNetworkStatus() {
 
 void processRadioData() {
     if (network.available()) {
-        String topic(hubID + "/");
+        String topic(hubID + "/" + OUTGOING_TOPIC + "/");
         RF24NetworkHeader header;
         network.peek(header);
 
@@ -272,7 +328,7 @@ void processRadioData() {
         Payload incomingMsg;
         String subTopic;
 
-        if (header.type == (unsigned char)RadioType::GID_NEGOTIATION && isInConnectMode) {
+        if (header.type == (unsigned char)RadioType::GID_NEGOTIATION) { //  && isInConnectMode
             GLOBAL_ID_T GID;
             network.read(header, &GID, sizeof(GID));
             Serial.print("Got a node id request from a module with gid 0x");
@@ -330,7 +386,7 @@ void processRadioData() {
                 return;
         }
         Serial.println(receivedData);
-        if (!mqttClient.publish(topic, receivedData)) {
+        if (!mqttClient.publish(topic, receivedData, true, 0)) {
             Serial.println("Failed to publish to mqtt broker!");
         }
     }
@@ -353,18 +409,21 @@ void connectToBroker() {
     Serial.print("Connecting to MQTT broker[");
     Serial.print(mqttServer);
     Serial.print("]...");
-    while (!mqttClient.connect(("arduino", "user", "password"))) {
+    while (!mqttClient.connect("arduino", "hub", "cqLnvEYq")) {
         Serial.print(".");
         delay(1000);
     }
     Serial.println(" connected!");
+    mqttClient.publish((hubID + "/status").c_str(), "online", true, 1);
     delay(100);
-    mqttClient.subscribe(hubID + "/" + INCOMING_TOPIC);
+    mqttClient.subscribe(hubID + "/" + INCOMING_TOPIC + "/#");
 }
 
 void initMqtt() {
     // initialize mqtt client instance
     mqttClient.begin(mqttServer, mqttPort, wifiNetworkClient);
+    mqttClient.setCleanSession(false);
+    mqttClient.setWill((hubID + "/status").c_str(), "offline", true, 1);
 
     // setup mqtt client's callbacks
     mqttClient.onMessage(messageReceivedCb);
@@ -377,24 +436,23 @@ void initRadio() {
     Serial.print("Set radio node id to ");
     Serial.println(mesh.getNodeID());
 
-    // Set the PA Level to MIN and disable LNA for testing & power supply related issues
-    radio.begin();
-    radio.setPALevel(RF24_PA_MIN, 0);
-
     // Connect to the mesh
     if (!mesh.begin()) {
         // if mesh.begin() returns false for a master node, then radio.begin() returned false.
         Serial.println("Radio hardware not responding.");
         ESP.restart();
     }
-    Serial.println("Mesh connection successful!\n");
+
+    radio.setPALevel(RF24_PA_MIN, 0);
 }
 
 String globalIdToString(GLOBAL_ID_T gid) {
     String gidStr = "";
+    uint8_t curr_byte;
 
-    for (int i = 3; i >= 0 ; i--) {
-        gidStr += String((gid >> (i * 8)) & 0xFF, HEX) + (i != 0 ? ":" : "");
+    for (int i = sizeof(GLOBAL_ID_T) - 1; i >= 0 ; i--) {
+        curr_byte = (gid >> (i * 8)) & 0xFF;
+        gidStr += String(curr_byte < 10 ? "0" : "") + String(curr_byte, HEX) + (i != 0 ? ":" : "");
     }
     return gidStr;
 }
@@ -413,12 +471,29 @@ uint16_t getNewNodeID() {
     Serial.println("No more available node ids!");
     return -1;
 }
-// GLOBAL_ID_T stringToGlobalId(const String& buffer) {
-//     const char delim[] = ":";
-//     char *byteToken = strtok(buffer.c_str(), delim);
-//     while (byteToken != nullptr) {
 
-//         byteToken = strtok(NULL, delim);
-//     }
-//     return 0;
-// }
+GLOBAL_ID_T stringToGlobalId(const String& buffer) {
+    GLOBAL_ID_T result = 0;
+    const char delim[] = ":";
+    char bufferCopy[buffer.length() + 1];
+    strcpy(bufferCopy, buffer.c_str());
+    char *byteToken = strtok(bufferCopy, delim);
+    while (byteToken != nullptr) {
+        result = (result << 8) | strtol(byteToken, nullptr, 16);
+        byteToken = strtok(NULL, delim);
+    }
+    return result;
+}
+
+CommandType getCommand(String &commandString) {
+    if (commandString == COMMAND_FORCE_UPDATE) {
+        return CommandType::FORCE_UPDATE;
+    } else if (commandString == COMMAND_CHANGE_STRATEGY) {
+        return CommandType::CHANGE_STRATEGY;
+    } else if (commandString == COMMAND_CHANGE_SEND_INTERVAL) {
+        return CommandType::CHANGE_DELAY;
+    } else if (commandString == COMMAND_CHANGE_THRESHOLD) {
+        return CommandType::CHANGE_THRESHOLD;
+    }
+    return CommandType::LAST;
+}

@@ -30,26 +30,32 @@ public:
                               uint8_t cePin, 
                               uint8_t csPin, 
                               uint8_t connectButtonPin, 
-                              uint8_t sensorPin, 
+                              uint8_t sensorPin,
+                              uint8_t statusLedPin,
                               TEMPERATURE_T temperatureThreshold = 1.0f,
-                              HUMIDITY_T humidityThreshold = 1.0f) : Module(defaultGlobalId, cePin, csPin, connectButtonPin), sensorPin(sensorPin), readTimer(2500), temperatureThreshold(temperatureThreshold), humidityThreshold(humidityThreshold) {}
+                              HUMIDITY_T humidityThreshold = 1.0f) : Module(defaultGlobalId, cePin, csPin, connectButtonPin, statusLedPin), sensorPin(sensorPin), readTimer(2500), temperatureThreshold(temperatureThreshold), humidityThreshold(humidityThreshold) {}
 
     void initSubmodule() override {
         pinMode(sensorPin, INPUT);
     }
     
-    bool shouldSend() override {
+    bool readData() {
         if (!readTimer.elapsed()) {
             return false;
         }
         readTimer.reset();
-        shouldSendHum = false;
-        shouldSendTemp = false;
         dhtSensor.read22(sensorPin);
         readTemp = dhtSensor.temperature;
         readHum = dhtSensor.humidity;
-        Serial.println("Temperature: " + String(readTemp) + " Humidity: " + String(readHum));
-        Serial.println(readTemp);
+        return true;
+    }
+
+    bool shouldSend() override {
+        if (!readData()) {
+            return false;
+        }
+        shouldSendHum = false;
+        shouldSendTemp = false;
         if (abs(readTemp - tempLastSent) > temperatureThreshold) {
             tempLastSent = readTemp;
             shouldSendTemp = true;
@@ -61,9 +67,16 @@ public:
         return shouldSendHum || shouldSendTemp;
     }
 
-    void sendData() override {
+    void sendData(bool force) override {
         Payload payload;
         payload.global_id = globalId;
+
+        if (force) {
+            shouldSendTemp = true;
+            shouldSendHum = true;
+            readData();
+        }
+
         if (shouldSendTemp) {
             payload.data = int(readTemp * 10);
             safeWriteToMesh(&payload, (uint8_t)RadioType::TEMPERATURE, sizeof(payload));
@@ -71,6 +84,25 @@ public:
         if (shouldSendHum) {
             payload.data = int(readHum * 10);
             safeWriteToMesh(&payload, (uint8_t)RadioType::HUMIDITY, sizeof(payload));
+        }
+    }
+
+    void handleRadioMessage(RF24NetworkHeader header, uint16_t incomingBytesCount) override {
+        if (header.type == (uint8_t)RadioType::CHANGE_THRESHOLD) {
+            char newIntervalBuffer[21];
+            network.read(header, &newIntervalBuffer, incomingBytesCount);
+            char* tempToken = strtok(newIntervalBuffer, "\n");
+            uint32_t newThreshold;
+            newThreshold = atof(tempToken);
+            if (newThreshold > 0.0) {
+                temperatureThreshold = newThreshold;
+            }
+
+            char* humToken = strtok(NULL, "\n");
+            newThreshold = atof(humToken);
+            if (newThreshold > 0.0) {
+                humidityThreshold = newThreshold;
+            }
         }
     }
 };

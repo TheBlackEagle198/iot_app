@@ -5,8 +5,8 @@
 #include "Payload.h"
 
 Module::Module(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin, uint8_t statusLedPin) :
-    radio(cePin, csPin), network(radio), mesh(radio, network), connectButtonPin(buttonPin), statusLedPin(statusLedPin),
-    connectButtonTimer(1000), sendTimer(1000), statusLedBlinkTimer(100) {
+    radio(cePin, csPin), network(radio), mesh(radio, network), connectButtonPin(buttonPin), connectButtonTimer(1000), statusLedPin(statusLedPin),
+    sendTimer(sendInterval), statusLedBlinkTimer(100), waitForMasterTimer(1500){
     globalId = this->readGIDFromEEPROM();
     if (globalId == 0) {
         globalId = defaultGlobalId;
@@ -78,7 +78,6 @@ bool Module::initRadio() {
         Serial.println(mesh.mesh_address, OCT);
     }
 
-    // not sure if this update is needed; added it just in case
     mesh.update();
 
     // perform the nodeID neogitation based on the GID
@@ -87,9 +86,13 @@ bool Module::initRadio() {
 
     // wait for a response from the master node
     Serial.print("Waiting for master node");
+    waitForMasterTimer.reset();
     while (!network.available()) {
-        // Serial.print(".");
         mesh.update();
+        if (waitForMasterTimer.elapsed()) {
+            Serial.println("Timeout waiting for master node");
+            return false;
+        }
     }
     Serial.println();
     Serial.println("Done waiting for master node");
@@ -137,8 +140,31 @@ void Module::run() {
             mesh.update();
             if (network.available()) {
                 RF24NetworkHeader header;
-                network.peek(header);
+                uint16_t incomingBytesCount;
+                incomingBytesCount = network.peek(header);
                 Serial.println(header.toString());
+                mesh.update();
+                if (header.type == (uint8_t)RadioType::CHANGE_STRATEGY) {
+                    SendStrategy newStrategy;
+                    network.read(header, &newStrategy, sizeof(newStrategy));
+                    changeStrategy(newStrategy);
+                } else if (header.type == (uint8_t)RadioType::GET) {
+                    // read that 0 byte
+                    uint8_t dummy = 0;
+                    network.read(header, &dummy, sizeof(dummy));
+                    delay(5); // helps with radio stability
+                    sendData(true);
+                } else if(header.type == (uint8_t)RadioType::CHANGE_DELAY) {
+                    char newIntervalBuffer[10];
+                    network.read(header, &newIntervalBuffer, incomingBytesCount);
+                    uint32_t newInterval;
+                    newInterval = strtoul(newIntervalBuffer, NULL, 10); // convert the string to an integer (base 10)
+                    sendTimer.setInterval(newInterval); // set the new interval (in ms)
+                    sendTimer.reset();
+                    Serial.println("Changed send interval to " + String(newInterval) + "ms");
+                } else {
+                    handleRadioMessage(header, incomingBytesCount);
+                }
             }
             switch (sendStrategy) {
                 case SendStrategy::SEND_ON_CHANGE:
@@ -150,7 +176,7 @@ void Module::run() {
                     break;
                 case SendStrategy::SEND_ALWAYS:
                     if (sendTimer.elapsed()) {
-                        sendData();
+                        sendData(true);
                         digitalWrite(statusLedPin, HIGH);
                         statusLedBlinkTimer.reset();
                         sendTimer.reset();
