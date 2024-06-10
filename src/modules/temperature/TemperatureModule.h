@@ -2,7 +2,6 @@
 
 #include <Module.h>
 #include <RadioType.h>
-#include <Payload.h>
 #include "dht.h"
 #include "Timer.h"
 
@@ -68,9 +67,6 @@ public:
     }
 
     void sendData(bool force) override {
-        Payload payload;
-        payload.global_id = globalId;
-
         if (force) {
             shouldSendTemp = true;
             shouldSendHum = true;
@@ -78,12 +74,11 @@ public:
         }
 
         if (shouldSendTemp) {
-            payload.data = int(readTemp * 10);
-            safeWriteToMesh(&payload, (uint8_t)RadioType::TEMPERATURE, sizeof(payload));
+            safeWriteToMesh(&readTemp, (uint8_t)RadioType::TEMPERATURE, sizeof(readTemp));
         }
         if (shouldSendHum) {
-            payload.data = int(readHum * 10);
-            safeWriteToMesh(&payload, (uint8_t)RadioType::HUMIDITY, sizeof(payload));
+            HUMIDITY_T currHum = int(readHum * 10);
+            safeWriteToMesh(&readHum, (uint8_t)RadioType::HUMIDITY, sizeof(readHum));
         }
     }
 

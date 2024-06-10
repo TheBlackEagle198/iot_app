@@ -6,7 +6,6 @@
 #include <SPI.h>
 #include "GlobalConfig.h"
 #include "RadioType.h"
-#include "Payload.h"
 #include "CronJob.h"
 #include "CronJobQueue.h"
 #include "Timer.h"
@@ -62,7 +61,7 @@ public:
     /// @param[in] nodeId - the node id to search for
     /// @param[out] GID - the global id if found
     /// @return true if the global id was found, false otherwise
-    bool getByNodeID(uint16_t nodeId, GLOBAL_ID_T& GID) {
+    bool getByNodeID(NODE_ID_T nodeId, GLOBAL_ID_T& GID) {
         
         for (uint32_t i = 0; i <= this->_lastElementIndex; i++) {
             if (nodeId == this->_nodeIDs[i]) {
@@ -77,7 +76,7 @@ public:
     /// @param gid - the global id to search for
     /// @param nodeId - the node id if found
     /// @return true if the node id was found, false otherwise
-    bool getByGID(GLOBAL_ID_T gid, uint16_t& nodeId) {
+    bool getByGID(GLOBAL_ID_T gid, NODE_ID_T& nodeId) {
         for (uint32_t i = 0; i <= this->_lastElementIndex; i++) {
             if (gid == this->_GIDs[i]) {
                 nodeId = this->_nodeIDs[i];
@@ -87,7 +86,7 @@ public:
         return false;
     }
 
-    bool addSet(uint16_t nodeID, GLOBAL_ID_T GID) {
+    bool addSet(NODE_ID_T nodeID, GLOBAL_ID_T GID) {
         if (this->_lastElementIndex == MAX_SIZE - 2) return false;
         this->_lastElementIndex++;
         this->_nodeIDs[this->_lastElementIndex] = nodeID;
@@ -269,7 +268,7 @@ void messageReceivedCb(String &topic, String &payload) {
     GLOBAL_ID_T gid = stringToGlobalId(moduleGidStr);
     Serial.println(gid, HEX);
 
-    uint16_t nodeId;
+    NODE_ID_T nodeId;
     if (globalToNodeIdsMap.getByGID(gid, nodeId)) {
         Serial.println("Found node id: " + String(nodeId));
         // send the command to the module
@@ -315,6 +314,13 @@ void printNetworkStatus() {
     }
 }
 
+union IncomingMessage {
+    TEMPERATURE_T temperature;
+    HUMIDITY_T humidity;
+    BOOLEAN_T boolean;
+    POTENTIOMETER_T potentiometer;
+};
+
 void processRadioData() {
     if (network.available()) {
         String topic(hubID + "/" + OUTGOING_TOPIC + "/");
@@ -325,7 +331,6 @@ void processRadioData() {
         Serial.println(header.toString());
         // printNetworkStatus();
         
-        Payload incomingMsg;
         String subTopic;
 
         if (header.type == (unsigned char)RadioType::GID_NEGOTIATION) { //  && isInConnectMode
@@ -334,7 +339,7 @@ void processRadioData() {
             Serial.print("Got a node id request from a module with gid 0x");
             Serial.println(GID, HEX);
 
-            uint16_t newNodeID = mesh.getNodeID(header.from_node);
+            NODE_ID_T newNodeID = mesh.getNodeID(header.from_node);
             // Serial.println(globalToNodeIdsMap.getByGID(GID, newNodeID));
             if (!globalToNodeIdsMap.getByGID(GID, newNodeID)) {
                 // the gid is not in the map; assign it an unused node id
@@ -353,40 +358,67 @@ void processRadioData() {
             return;
         }
 
-        network.read(header, &incomingMsg, sizeof(incomingMsg));
-        String gidBuffer = globalIdToString(incomingMsg.global_id);
-        topic += gidBuffer + "/";
-
-        String receivedData;
+        GLOBAL_ID_T currentGID = 0;
+        globalToNodeIdsMap.getByNodeID(
+            mesh.getNodeID(header.from_node),
+            currentGID
+        );
+        topic += globalIdToString(currentGID) + "/";
+        String brokerMessage;
+        IncomingMessage incomingMsg;
         switch (header.type) {
+            // sensor data
             case (unsigned char)RadioType::TEMPERATURE:
                 topic += "temperature";
-                Serial.print("Temperature: ");
-                receivedData = String(((float)incomingMsg.data) / 10.0);
+                network.read(header, &incomingMsg.temperature, sizeof(incomingMsg));
+                brokerMessage = String(incomingMsg.temperature, 1);
                 break;
             case (unsigned char)RadioType::HUMIDITY:
                 topic += "humidity";
-                Serial.print("Humidity: ");
-                receivedData = String(((float)incomingMsg.data) / 10.0);
+                network.read(header, &incomingMsg, sizeof(incomingMsg));
+                brokerMessage = String(incomingMsg.humidity, 1);
                 break;
             case (unsigned char)RadioType::BOOLEAN:
                 topic += "boolean";
-                Serial.print("Boolean: ");
-                receivedData = String((bool)incomingMsg.data);
+                network.read(header, &incomingMsg, sizeof(incomingMsg));
+                brokerMessage = String(incomingMsg.boolean);
                 break;
             case (unsigned char)RadioType::POTENTIOMETER:
                 topic += "potentiometer";
-                Serial.print("Potentiometer: ");
-                receivedData = String((POTENTIOMETER_T)incomingMsg.data);
+                network.read(header, &incomingMsg, sizeof(incomingMsg));
+                brokerMessage = String(incomingMsg.potentiometer);
                 break;
+            // commands
+            // case (unsigned char)RadioType::CHANGE_STRATEGY:
+            //     topic += "strategy";
+            //     Serial.print("Strategy: ");
+            //     if ((SendStrategy)incomingMsg.data == SendStrategy::SEND_ALWAYS) {
+            //         brokerMessage = "always";
+            //     } else {
+            //         brokerMessage = "on_change";
+            //     }
+            //     break;
+            // case (unsigned char)RadioType::CHANGE_THRESHOLD:
+            //     topic += "threshold";
+            //     brokerMessage = String(incomingMsg.data);
+            //     break;
+            // case (unsigned char)RadioType::CHANGE_DELAY:
+            //     topic += "delay";
+            //     brokerMessage = String(incomingMsg.data);
+            //     break;
+            // default
             default:
                 topic += "error";
                 Serial.print("Unknown radio message type: ");
                 Serial.println(header.type);
                 return;
         }
-        Serial.println(receivedData);
-        if (!mqttClient.publish(topic, receivedData, true, 0)) {
+        Serial.println("Publishing to mqtt broker: ");
+        Serial.print("Topic: ");
+        Serial.println(topic);
+        Serial.print("Message: ");
+        Serial.println(brokerMessage);
+        if (!mqttClient.publish(topic, brokerMessage, true, 0)) {
             Serial.println("Failed to publish to mqtt broker!");
         }
     }

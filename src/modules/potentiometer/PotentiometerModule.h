@@ -2,7 +2,6 @@
 
 #include <Module.h>
 #include <RadioType.h>
-#include <Payload.h>
 
 class PotentiometerModule : public Module {
 private:
@@ -27,11 +26,8 @@ public:
     }
 
     void sendData(bool force) override {
-        Payload payload;
-        payload.global_id = globalId;
-        payload.data = readPot;
         potLastSent = readPot;
-        safeWriteToMesh(&payload, (uint8_t)RadioType::POTENTIOMETER, sizeof(payload));
+        safeWriteToMesh(&potLastSent, (uint8_t)RadioType::POTENTIOMETER, sizeof(potLastSent));
     }
 
     void handleRadioMessage(RF24NetworkHeader header, uint16_t incomingBytesCount) override {

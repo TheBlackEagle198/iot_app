@@ -11,3 +11,5 @@ typedef uint16_t POTENTIOMETER_T;
 typedef float TEMPERATURE_T;
 typedef float HUMIDITY_T;
 typedef bool BOOLEAN_T;
+
+typedef int16_t NODE_ID_T;

@@ -2,7 +2,6 @@
 #include <SPI.h>
 #include <EEPROM.h>
 #include "RadioType.h"
-#include "Payload.h"
 
 Module::Module(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin, uint8_t statusLedPin) :
     radio(cePin, csPin), network(radio), mesh(radio, network), connectButtonPin(buttonPin), connectButtonTimer(1000), statusLedPin(statusLedPin),

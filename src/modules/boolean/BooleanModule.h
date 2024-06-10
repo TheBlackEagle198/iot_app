@@ -2,7 +2,6 @@
 
 #include <Module.h>
 #include <RadioType.h>
-#include <Payload.h>
 
 class BooleanModule : public Module {
 private:
@@ -28,13 +27,12 @@ public:
     }
 
     void sendData(bool force) override {
-        Payload payload;
-        payload.global_id = globalId;
-        payload.data = digitalRead(BUTTON);
-        safeWriteToMesh(&payload, (uint8_t)RadioType::BOOLEAN, sizeof(payload));
+        BOOLEAN_T currentReading = digitalRead(BUTTON);
+        Serial.println(currentReading);
+        safeWriteToMesh(&currentReading, (uint8_t)RadioType::BOOLEAN, sizeof(currentReading));
     }
     
-    void handleRadioMessage(RF24NetworkHeader header) override {
+    void handleRadioMessage(RF24NetworkHeader header, uint16_t incomingBytesCount) override {
         if (header.type == (uint8_t)RadioType::CHANGE_DELAY) {
             network.read(header, &sendInterval, sizeof(sendInterval));
         }
