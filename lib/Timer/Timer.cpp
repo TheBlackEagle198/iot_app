@@ -15,3 +15,7 @@ bool Timer::elapsed() {
     }
     return false;
 }
+
+uint32_t Timer::getInterval() {
+    return this->interval;
+}

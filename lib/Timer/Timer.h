@@ -9,6 +9,8 @@ public:
     
     // @brief sets the interval of the timer
     void setInterval(uint32_t interval);
+
+    uint32_t getInterval();
     
     // @brief resets the timer
     void reset();

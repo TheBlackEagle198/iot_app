@@ -11,6 +11,7 @@
 
 #define MESH_MASTER_NODE_ID 0 ///< The ID of the master node
 #define MESH_MAX_NODE_ID 255 ///< The maximum node ID
+#define MAX_WRITE_ATTEMPTS 5 ///< The maximum number of write attempts before giving up
 
 /// related to the mesh library; added just in case
 #ifdef MESH_NOMASTER
@@ -50,6 +51,8 @@ protected:
     Timer statusLedBlinkTimer;
 
     Timer waitForMasterTimer;
+
+    uint8_t writeAttempts = 0;
 public:
     Module(GLOBAL_ID_T defaultGlobalId, uint8_t cePin, uint8_t csPin, uint8_t buttonPin, uint8_t statusledPin);
 
@@ -92,4 +95,12 @@ public:
     virtual void sendData(bool force = false) = 0;
 
     virtual void handleRadioMessage(RF24NetworkHeader header, uint16_t incomingBytesCount) = 0;
+
+    // @brief sends the current strategy
+    void radioSendStrategy();
+
+    // @brief sends the current send interval
+    void radioSendDelay();
+
+    virtual void radioSendThreshold() = 0;
 };

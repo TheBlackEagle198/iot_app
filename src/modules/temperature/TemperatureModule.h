@@ -103,11 +103,13 @@ public:
             Serial.println("New thresholds:");
             Serial.println(temperatureThreshold);
             Serial.println(humidityThreshold);
-            memset(newIntervalBuffer, 0, sizeof(newIntervalBuffer));
-            // arduino does not support %f
-            sprintf(newIntervalBuffer, "%d.%d\n%d.%d", (int)(temperatureThreshold), (int)(temperatureThreshold*10) % 10, (int)(humidityThreshold), (int)(humidityThreshold*10) % 10);
-            Serial.println(newIntervalBuffer);
-            safeWriteToMesh(newIntervalBuffer, (uint8_t)RadioType::CHANGE_THRESHOLD, incomingBytesCount);
-        }
+            radioSendThreshold();
+    }
+
+    void radioSendThreshold() override {
+        // arduino does not support %f
+        char thresholdBuffer[21];
+        sprintf(thresholdBuffer, "%d.%d\n%d.%d", (int)(temperatureThreshold), (int)(temperatureThreshold*10) % 10, (int)(humidityThreshold), (int)(humidityThreshold*10) % 10);
+        safeWriteToMesh(thresholdBuffer, (uint8_t)RadioType::CHANGE_THRESHOLD, sizeof(thresholdBuffer));
     }
 };

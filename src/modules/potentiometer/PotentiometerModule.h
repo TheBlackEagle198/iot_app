@@ -38,8 +38,13 @@ public:
             uint32_t newThreshold;
             newThreshold = strtoul(newIntervalBuffer, NULL, 10); // convert the string to an integer (base 10)
             threshold = newThreshold;
-
-            safeWriteToMesh(newIntervalBuffer, (uint8_t)RadioType::CHANGE_THRESHOLD, incomingBytesCount);
+            radioSendThreshold();
         }
+    }
+
+    void radioSendThreshold() override {
+        char thresholdBuffer[10];
+        itoa(threshold, thresholdBuffer, 10);
+        safeWriteToMesh(thresholdBuffer, (uint8_t)RadioType::CHANGE_THRESHOLD, sizeof(thresholdBuffer));
     }
 };

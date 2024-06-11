@@ -20,8 +20,7 @@ GLOBAL_ID_T Module::readGIDFromEEPROM() {
 }
 
 void Module::retryMeshConnection() {
-    do
-    {
+    do {
         Serial.print(F("Reconnecting to the mesh... Current address: "));
         Serial.println(this->mesh.mesh_address, OCT);
     } while (this->mesh.renewAddress() == MESH_DEFAULT_ADDRESS);
@@ -30,15 +29,24 @@ void Module::retryMeshConnection() {
 void Module::safeWriteToMesh(const void *data, uint8_t msg_type, size_t size, uint8_t recvNodeId) {
     delay(10); // helps with radio stability
     if (!mesh.write(data, msg_type, size, recvNodeId)) {
-        // If a write fails, check connectivity to the mesh network
-        if (!mesh.checkConnection()) {
-            retryMeshConnection();
-        }
-        else {
-            Serial.println("Send fail, Still connected to mesh");
+        if (writeAttempts < MAX_WRITE_ATTEMPTS) {
+            writeAttempts++;
+            Serial.println("Send fail, retrying...");
+            safeWriteToMesh(data, msg_type, size, recvNodeId);
+        } else {
+            Serial.println("Send fail, max attempts reached");
+            // If a write fails, check connectivity to the mesh network
+            if (!mesh.checkConnection()) {
+                retryMeshConnection();
+            }
+            else {
+                Serial.println("Send fail, Still connected to mesh");
+            }
+            writeAttempts = 0;
         }
     }
     else {
+        writeAttempts = 0;
         Serial.print("Send OK; self node id:");
         Serial.print(mesh.getNodeID());
         Serial.print("self mesh id:");
@@ -132,6 +140,9 @@ void Module::run() {
             }
             if (!ranOnce) {
                 digitalWrite(statusLedPin, LOW);
+                radioSendStrategy();
+                radioSendDelay();
+                radioSendThreshold();
                 ranOnce = true;
             }
             if (statusLedBlinkTimer.elapsed()) {
@@ -159,7 +170,7 @@ void Module::run() {
                     sendTimer.setInterval(newInterval); // set the new interval (in ms)
                     sendTimer.reset();
                     Serial.println("Changed send interval to " + String(newInterval) + "ms");
-                    safeWriteToMesh(&newInterval, (uint8_t)RadioType::CHANGE_DELAY, sizeof(newInterval));
+                    radioSendDelay();
                 } else {
                     handleRadioMessage(header, incomingBytesCount);
                 }
@@ -261,5 +272,14 @@ void Module::changeStrategy(SendStrategy strategy) {
         sendTimer.reset();
     }
     sendStrategy = strategy;
-    safeWriteToMesh(&sendStrategy, (uint8_t)RadioType::CHANGE_STRATEGY, sizeof(SendStrategy));
+    radioSendStrategy();
+}
+
+void Module::radioSendDelay() {
+    DELAY_T currentInterval = sendTimer.getInterval();
+    safeWriteToMesh(&currentInterval, (uint8_t)RadioType::CHANGE_DELAY, sizeof(currentInterval));
+}
+
+void Module::radioSendStrategy() {
+    safeWriteToMesh(&this->sendStrategy, (uint8_t)RadioType::CHANGE_STRATEGY, sizeof(SendStrategy));
 }

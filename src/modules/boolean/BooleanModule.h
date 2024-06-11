@@ -37,4 +37,6 @@ public:
             network.read(header, &sendInterval, sizeof(sendInterval));
         }
     }
+
+    void radioSendThreshold() override {}
 };
