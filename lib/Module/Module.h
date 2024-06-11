@@ -82,9 +82,6 @@ public:
     // @brief switches the connection state of the module
     void switchState(ConnectionState newState);
 
-    // initializes the send strategy
-    void initSendStrategy(SendStrategy strategy);
-
     // changes the send strategy; DON'T switch to any states in this method
     void changeStrategy(SendStrategy strategy);
 

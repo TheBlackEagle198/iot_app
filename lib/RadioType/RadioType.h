@@ -4,8 +4,7 @@
 enum class RadioType {
     // ack is not sent by the receiver
 
-    // ack is sent by the receiver
-    TEMPERATURE = 64,
+    TEMPERATURE = 0,
     HUMIDITY,
     BOOLEAN,
     POTENTIOMETER,
@@ -16,6 +15,7 @@ enum class RadioType {
     CHANGE_STRATEGY,
     CHANGE_THRESHOLD,
     CHANGE_DELAY,
+    // ack is sent by the receiver
 
     RADIO_LAST
 };

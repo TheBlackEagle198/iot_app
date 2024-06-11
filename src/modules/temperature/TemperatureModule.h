@@ -77,7 +77,6 @@ public:
             safeWriteToMesh(&readTemp, (uint8_t)RadioType::TEMPERATURE, sizeof(readTemp));
         }
         if (shouldSendHum) {
-            HUMIDITY_T currHum = int(readHum * 10);
             safeWriteToMesh(&readHum, (uint8_t)RadioType::HUMIDITY, sizeof(readHum));
         }
     }
@@ -87,17 +86,28 @@ public:
             char newIntervalBuffer[21];
             network.read(header, &newIntervalBuffer, incomingBytesCount);
             char* tempToken = strtok(newIntervalBuffer, "\n");
-            uint32_t newThreshold;
+            float newThreshold;
             newThreshold = atof(tempToken);
+            Serial.println(newThreshold);
             if (newThreshold > 0.0) {
                 temperatureThreshold = newThreshold;
             }
 
             char* humToken = strtok(NULL, "\n");
             newThreshold = atof(humToken);
+            Serial.println(newThreshold);
             if (newThreshold > 0.0) {
                 humidityThreshold = newThreshold;
             }
+
+            Serial.println("New thresholds:");
+            Serial.println(temperatureThreshold);
+            Serial.println(humidityThreshold);
+            memset(newIntervalBuffer, 0, sizeof(newIntervalBuffer));
+            // arduino does not support %f
+            sprintf(newIntervalBuffer, "%d.%d\n%d.%d", (int)(temperatureThreshold), (int)(temperatureThreshold*10) % 10, (int)(humidityThreshold), (int)(humidityThreshold*10) % 10);
+            Serial.println(newIntervalBuffer);
+            safeWriteToMesh(newIntervalBuffer, (uint8_t)RadioType::CHANGE_THRESHOLD, incomingBytesCount);
         }
     }
 };

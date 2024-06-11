@@ -28,6 +28,7 @@ void Module::retryMeshConnection() {
 }
 
 void Module::safeWriteToMesh(const void *data, uint8_t msg_type, size_t size, uint8_t recvNodeId) {
+    delay(10); // helps with radio stability
     if (!mesh.write(data, msg_type, size, recvNodeId)) {
         // If a write fails, check connectivity to the mesh network
         if (!mesh.checkConnection()) {
@@ -151,16 +152,14 @@ void Module::run() {
                     // read that 0 byte
                     uint8_t dummy = 0;
                     network.read(header, &dummy, sizeof(dummy));
-                    delay(5); // helps with radio stability
                     sendData(true);
                 } else if(header.type == (uint8_t)RadioType::CHANGE_DELAY) {
-                    char newIntervalBuffer[10];
-                    network.read(header, &newIntervalBuffer, incomingBytesCount);
-                    uint32_t newInterval;
-                    newInterval = strtoul(newIntervalBuffer, NULL, 10); // convert the string to an integer (base 10)
+                    DELAY_T newInterval = 0;
+                    network.read(header, &newInterval, sizeof(newInterval));
                     sendTimer.setInterval(newInterval); // set the new interval (in ms)
                     sendTimer.reset();
                     Serial.println("Changed send interval to " + String(newInterval) + "ms");
+                    safeWriteToMesh(&newInterval, (uint8_t)RadioType::CHANGE_DELAY, sizeof(newInterval));
                 } else {
                     handleRadioMessage(header, incomingBytesCount);
                 }
@@ -257,17 +256,10 @@ inline const char* Module::stateToStr(ConnectionState state) {
     }
 }
 
-void Module::initSendStrategy(SendStrategy strategy) {
-    switch (strategy) {
-        case SendStrategy::SEND_ON_CHANGE:
-            break;
-        case SendStrategy::SEND_ALWAYS:
-            sendTimer.reset();
-            break;
-    }
-}
-
 void Module::changeStrategy(SendStrategy strategy) {
-    initSendStrategy(strategy);
+    if (strategy == SendStrategy::SEND_ALWAYS) {
+        sendTimer.reset();
+    }
     sendStrategy = strategy;
+    safeWriteToMesh(&sendStrategy, (uint8_t)RadioType::CHANGE_STRATEGY, sizeof(SendStrategy));
 }

@@ -13,3 +13,4 @@ typedef float HUMIDITY_T;
 typedef bool BOOLEAN_T;
 
 typedef int16_t NODE_ID_T;
+typedef uint32_t DELAY_T;

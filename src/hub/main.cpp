@@ -224,33 +224,26 @@ void initCronJobs() {
     }));
 }
 
+int writeAttempts = 0;
 void safeWriteToMesh(const void *data, uint8_t msg_type, size_t size, uint8_t recvNodeId)
 {
+    mesh.update();
     if (!mesh.write(data, msg_type, size, recvNodeId))
     {
-
-        // If a write fails, check connectivity to the mesh network
-        if (!mesh.checkConnection())
+        writeAttempts++;
+        Serial.println("Send failed");
+        if (writeAttempts > 5)
         {
-            Serial.print("RF24 failure reason: ");
-            radio.printDetails();
-            // refresh the network address
-            Serial.println("Renewing Address");
-            if (mesh.renewAddress() == MESH_DEFAULT_ADDRESS)
-            {
-                // If address renewal fails, reconfigure the radio and restart the mesh
-                // This allows recovery from most if not all radio errors
-                mesh.begin();
-            }
+            Serial.println("Send failed too many times, giving up");
+            writeAttempts = 0;
+            return;
         }
-        else
-        {
-            Serial.println("Send fail, Test OK");
-        }
+        safeWriteToMesh(data, msg_type, size, recvNodeId);
     }
     else
     {
         Serial.println("Send OK");
+        writeAttempts = 0;
     }
 }
 
@@ -276,6 +269,7 @@ void messageReceivedCb(String &topic, String &payload) {
         CommandType commandType = getCommand(command);
         uint8_t empty = 0;
         SendStrategy newStrategy = SendStrategy::SEND_ON_CHANGE;
+        DELAY_T newDelay = 0;
         switch (commandType) {
             case CommandType::FORCE_UPDATE:
                 safeWriteToMesh(&empty, (uint8_t)RadioType::GET, sizeof(empty), nodeId);
@@ -290,7 +284,9 @@ void messageReceivedCb(String &topic, String &payload) {
                 }
                 break;
             case CommandType::CHANGE_DELAY:
-                safeWriteToMesh(payload.c_str(), (uint8_t)RadioType::CHANGE_DELAY, payload.length(), nodeId);
+                newDelay = payload.toInt();
+                Serial.println("New delay: " + String(newDelay));
+                safeWriteToMesh(&newDelay, (uint8_t)RadioType::CHANGE_DELAY, sizeof(newDelay), nodeId);
                 break;
             case CommandType::CHANGE_THRESHOLD:
                 safeWriteToMesh(payload.c_str(), (uint8_t)RadioType::CHANGE_THRESHOLD, payload.length(), nodeId);
@@ -319,6 +315,9 @@ union IncomingMessage {
     HUMIDITY_T humidity;
     BOOLEAN_T boolean;
     POTENTIOMETER_T potentiometer;
+    DELAY_T delay;
+    SendStrategy strategy;
+    char threshold[20];
 };
 
 void processRadioData() {
@@ -352,7 +351,7 @@ void processRadioData() {
             Serial.print("Sending node id ");
             Serial.println(newNodeID);
             safeWriteToMesh(&newNodeID, 
-                            (unsigned char)RadioType::GID_NEGOTIATION, 
+                            (uint8_t)RadioType::GID_NEGOTIATION, 
                             sizeof(newNodeID), 
                             mesh.getNodeID(header.from_node));
             return;
@@ -370,42 +369,44 @@ void processRadioData() {
             // sensor data
             case (unsigned char)RadioType::TEMPERATURE:
                 topic += "temperature";
-                network.read(header, &incomingMsg.temperature, sizeof(incomingMsg));
+                network.read(header, &incomingMsg.temperature, sizeof(incomingMsg.temperature));
                 brokerMessage = String(incomingMsg.temperature, 1);
                 break;
             case (unsigned char)RadioType::HUMIDITY:
                 topic += "humidity";
-                network.read(header, &incomingMsg, sizeof(incomingMsg));
+                network.read(header, &incomingMsg.humidity, sizeof(incomingMsg.humidity));
                 brokerMessage = String(incomingMsg.humidity, 1);
                 break;
             case (unsigned char)RadioType::BOOLEAN:
                 topic += "boolean";
-                network.read(header, &incomingMsg, sizeof(incomingMsg));
+                network.read(header, &incomingMsg.boolean, sizeof(incomingMsg.boolean));
                 brokerMessage = String(incomingMsg.boolean);
                 break;
             case (unsigned char)RadioType::POTENTIOMETER:
                 topic += "potentiometer";
-                network.read(header, &incomingMsg, sizeof(incomingMsg));
+                network.read(header, &incomingMsg.potentiometer, sizeof(incomingMsg.potentiometer));
                 brokerMessage = String(incomingMsg.potentiometer);
                 break;
             // commands
-            // case (unsigned char)RadioType::CHANGE_STRATEGY:
-            //     topic += "strategy";
-            //     Serial.print("Strategy: ");
-            //     if ((SendStrategy)incomingMsg.data == SendStrategy::SEND_ALWAYS) {
-            //         brokerMessage = "always";
-            //     } else {
-            //         brokerMessage = "on_change";
-            //     }
-            //     break;
-            // case (unsigned char)RadioType::CHANGE_THRESHOLD:
-            //     topic += "threshold";
-            //     brokerMessage = String(incomingMsg.data);
-            //     break;
-            // case (unsigned char)RadioType::CHANGE_DELAY:
-            //     topic += "delay";
-            //     brokerMessage = String(incomingMsg.data);
-            //     break;
+            case (unsigned char)RadioType::CHANGE_STRATEGY:
+                topic += COMMAND_CHANGE_STRATEGY;
+                network.read(header, &incomingMsg.strategy, sizeof(incomingMsg.strategy));
+                if (incomingMsg.strategy == SendStrategy::SEND_ALWAYS) {
+                    brokerMessage = "always";
+                } else {
+                    brokerMessage = "on_change";
+                }
+                break;
+            case (unsigned char)RadioType::CHANGE_THRESHOLD:
+                topic += COMMAND_CHANGE_THRESHOLD;
+                network.read(header, &incomingMsg.threshold, sizeof(incomingMsg.threshold));
+                brokerMessage = String(incomingMsg.threshold);
+                break;
+            case (unsigned char)RadioType::CHANGE_DELAY:
+                topic += COMMAND_CHANGE_SEND_INTERVAL;
+                network.read(header, &incomingMsg.delay, sizeof(incomingMsg.delay));
+                brokerMessage = String(incomingMsg.delay);
+                break;
             // default
             default:
                 topic += "error";
