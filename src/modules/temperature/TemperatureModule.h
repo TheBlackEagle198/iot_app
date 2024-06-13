@@ -104,6 +104,7 @@ public:
             Serial.println(temperatureThreshold);
             Serial.println(humidityThreshold);
             radioSendThreshold();
+        }
     }
 
     void radioSendThreshold() override {

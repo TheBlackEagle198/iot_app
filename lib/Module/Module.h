@@ -10,7 +10,6 @@
 #define DEFAULT_INTERVAL 1000 ///< default interval for sending updates to the master node
 
 #define MESH_MASTER_NODE_ID 0 ///< The ID of the master node
-#define MESH_MAX_NODE_ID 255 ///< The maximum node ID
 #define MAX_WRITE_ATTEMPTS 5 ///< The maximum number of write attempts before giving up
 
 /// related to the mesh library; added just in case
@@ -31,6 +30,8 @@ protected:
     RF24Network network;
     RF24Mesh mesh;
     GLOBAL_ID_T globalId;
+
+    uint8_t radioChannel = RADIO_MIN_CHANNEL;
 
     bool radioModuleAttached = false;
 

@@ -55,12 +55,19 @@ void Module::safeWriteToMesh(const void *data, uint8_t msg_type, size_t size, ui
 }
 
 bool Module::initRadio() {
+    Serial.print("Trying radio channel ");
+    Serial.println(radioChannel);
+    if (radioChannel >= RADIO_MAX_CHANNEL) {
+        Serial.println("Arrived to the end of radio channels, but couldn't find a master node.");
+        return false;
+    }
+
     // Set the nodeID manually to a temporary value
     mesh.setNodeID(MESH_MAX_NODE_ID);
 
     // Connect to the mesh
     Serial.println("Connecting to the mesh...");
-    if (!mesh.begin(97, RF24_1MBPS, 2000)) {
+    if (!mesh.begin(radioChannel, RF24_1MBPS, 100)) {
         Serial.println("Mesh failed to start.");
         return false;
     } else {
@@ -212,7 +219,18 @@ void Module::run() {
             }
             if (!ranOnce) {
                 ranOnce = true;
-                if (initRadio()) {
+
+                bool foundMaster = false;
+
+                for (uint8_t i = RADIO_MIN_CHANNEL; i < RADIO_MAX_CHANNEL; i++) {
+                    radioChannel = i;
+                    if (initRadio()) {
+                        foundMaster = true;
+                        break;
+                    }
+                }
+
+                if (foundMaster) {
                     switchState(ConnectionState::RETRY_CONNECTION);
                 } else {
                     switchState(ConnectionState::NOT_CONNECTED);
