@@ -847,7 +847,7 @@ void startPortal(WiFiMode wifiMode)
     if (isConfigPortalRunning)
         return;
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-    WiFi.softAP("this wifi");
+    WiFi.softAP(apSSID, apPassword);
     startWebServer();
     startDNS();
     isConfigPortalRunning = true;
