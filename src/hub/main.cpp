@@ -13,6 +13,7 @@
 #include "Preferences.h"
 #include <ESP8266WiFi.h>
 #include <DNSServer.h>
+#include "strings.h"
 
 /// @brief MQTT setup
 #define INCOMING_TOPIC "B2H"
@@ -294,6 +295,7 @@ void initCronJobs()
         if (isInConnectMode && connectModeExpirationTimer.elapsed()) {
             Serial.println("Connect mode expired!");
             isInConnectMode = false;
+            resetBrokerFSM(true);
         } }));
 }
 
@@ -729,10 +731,7 @@ void handleWiFiRoute()
     }
     else if (webServer.method() == HTTP_GET)
     {
-        String response = "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>Captive portal</title></head><body><link rel=\"stylesheet\" href=\"formPage.css\"></head><body>";
-        response += "<div class=\"content\"><h1 class=\"page-title\">WiFi configuration</h1><form method='post' action='/wifi'><input type='text' name='ssid' placeholder='SSID'><input type='password' name='password' placeholder='Password'><button type='submit'>Connect</button></form></div>";
-        response += "</body></html>";
-        webServer.send(200, "text/html", response);
+        webServer.send(200, "text/html", FPSTR(HTML_WIFI));
     }
 }
 
@@ -755,10 +754,7 @@ void handleMqttRoute()
     }
     else if (webServer.method() == HTTP_GET)
     {
-        String response = "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>Captive portal</title></head><body><link rel=\"stylesheet\" href=\"formPage.css\"></head><body>";
-        response += "<div class=\"content\"><h1 class=\"page-title\">MQTT configuration</h1><form method='post' action='/mqtt'><label for=\"server\">Server</label><input type='text' name='server' placeholder='MQTT Server'><label for=\"server\">Username</label><input type='text' name='user' placeholder='MQTT User'><label for=\"server\">Password</label><input type='password' name='password' placeholder='Password'><button type='submit'>Connect</button></form></div>";
-        response += "</body></html>";
-        webServer.send(200, "text/html", response);
+        webServer.send(200, "text/html", FPSTR(HTML_MQTT));
     }
 }
 
@@ -766,10 +762,7 @@ void handleHomeRoute()
 {
     if (webServer.method() == HTTP_GET)
     {
-        String response = "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>Captive portal</title><link rel=\"stylesheet\" href=\"landingPage.css\"></head><body>";
-        response += "<div class=\"content\"><h1 class=\"page-title\">Hub configuration</h1><p>Wifi Status: <span id=\"wifi_status\" class=\"red upper bold\">not connected</span></p><p>MQTT Status: <span id=\"mqtt_status\" class=\"red upper bold\">not connected</span></p><button onclick=\"window.location.href = '/wifi'\">Configure WiFi</button><button onclick=\"window.location.href = '/mqtt'\">Configure MQTT</button></div><script src=\"updateWiFi.js\"></script><script src=\"updateMQTT.js\"></script>";
-        response += "</body></html>";
-        webServer.send(200, "text/html", response);
+        webServer.send(200, "text/html", FPSTR(HTML_LANDING_PAGE));
     }
 }
 
@@ -794,16 +787,16 @@ void initHttpServer()
     webServer.send(200, "application/json", response); });
 
     webServer.on("/landingPage.css", []()
-                 { webServer.send(200, "text/css", "body{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif;background-color:#0A1B2C;color:white;}.content{font-family:sans-serif;margin:0 auto;width:80%;display:flex;align-items:center;flex-direction:column;}.green{color:green;}.red{color:red;}.upper{text-transform:uppercase;}.bold{font-weight:bold;}button{width:16ch;font-size:1.8rem;margin-top:20px;padding:8px20px;background-color:#3089DB;color:#0A1B2C;font-weight:bold;border:none;border-radius:5px;cursor:pointer;}.page-title{font-size:2.5rem;margin-bottom:20px;color:#C1DCF4;}"); });
+                 { webServer.send(200, "text/css", FPSTR(CSS_LANDING_PAGE)); });
 
     webServer.on("/formPage.css", []()
-                 { webServer.send(200, "text/css", "body{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif;background-color:#0A1B2C;color:white;}.content{font-family:sans-serif;margin:0 auto;width:80%;display:flex;align-items:center;flex-direction:column;}button{width:16ch;font-size:1.8rem;margin-top:20px;padding:8px20px;background-color:#3089DB;color:#0A1B2C;font-weight:bold;border:none;border-radius:5px;cursor:pointer;}.page-title{font-size:2.5rem;margin-bottom:20px;color:#C1DCF4;}form{display:flex;flex-direction:column;width:100%;}"); });
+                 { webServer.send(200, "text/css", FPSTR(CSS_FORM)); });
 
     webServer.on("/updateWiFi.js", []()
-                 { webServer.send(200, "text/javascript", "const wifiElem = document.getElementById('wifi_status');let wifiLastText = wifiElem.innerHTML;function updateWifiStatus() {fetch('/wifiStatus').then(response => response.json()).then(data => {if(wifiLastText!==data.status) {wifiElem.innerHTML = data.status;wifiElem.classList.toggle('red');wifiElem.classList.toggle('green');wifiLastText = data.status;}});}updateWifiStatus();setInterval(updateWifiStatus, 1000);"); });
+                 { webServer.send(200, "text/javascript", FPSTR(JS_UPDATE_WIFI)); });
 
     webServer.on("/updateMQTT.js", []()
-                 { webServer.send(200, "text/javascript", "const mqttElem = document.getElementById('wifi_status');let mqttLastText = mqttElem.innerHTML;function updateWifiStatus() {fetch('/wifiStatus').then(response => response.json()).then(data => {if(mqttLastText!==data.status) {mqttElem.innerHTML = data.status;mqttElem.classList.toggle('red');mqttElem.classList.toggle('green');mqttLastText = data.status;}});}updateWifiStatus();setInterval(updateWifiStatus, 1000);"); });
+                 { webServer.send(200, "text/javascript", FPSTR(JS_UPDATE_MQTT)); });
 
     webServer.on("/", handleHomeRoute);
 
@@ -844,6 +837,7 @@ void resetBrokerFSM(bool clearStoredData)
         {
             Serial.println("Failed to open preferences!");
         }
+        preferences.end();
     }
 }
 
@@ -871,7 +865,6 @@ void storeWiFi()
     {
         preferences.putString("ssid", ssid);
         preferences.putString("wifiPassword", wifiPassword);
-        preferences.end();
     }
     else
     {
