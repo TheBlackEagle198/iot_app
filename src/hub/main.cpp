@@ -286,6 +286,7 @@ void initCronJobs()
             if (longPressTimer.elapsed()) {
                 Serial.println("Long press detected");
                 isInConnectMode = true;
+                resetBrokerFSM(true);
                 connectModeExpirationTimer.reset();
             }
         }
@@ -295,7 +296,6 @@ void initCronJobs()
         if (isInConnectMode && connectModeExpirationTimer.elapsed()) {
             Serial.println("Connect mode expired!");
             isInConnectMode = false;
-            resetBrokerFSM(true);
         } }));
 }
 
@@ -707,6 +707,7 @@ void stopWebServer()
 
 void stopPortal()
 {
+    if (!isConfigPortalRunning) return;
     WiFi.mode(WIFI_STA);
     WiFi.softAPdisconnect(true);
     stopWebServer();
@@ -827,6 +828,10 @@ void resetBrokerFSM(bool clearStoredData)
     triedWiFiConfig = false;
     triedMqttConfig = false;
 
+    if (WiFi.status() == WL_CONNECTED) {
+        WiFi.disconnect();
+    }
+
     if (clearStoredData)
     {
         if (preferences.begin(PREFERENCES_NAMESPACE))
@@ -843,9 +848,8 @@ void resetBrokerFSM(bool clearStoredData)
 
 void startPortal(WiFiMode wifiMode)
 {
+    if (isConfigPortalRunning) return;
     WiFi.mode(wifiMode);
-    if (isConfigPortalRunning)
-        return;
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
     WiFi.softAP(apSSID, apPassword);
     startWebServer();
@@ -855,6 +859,7 @@ void startPortal(WiFiMode wifiMode)
 
 void runPortal()
 {
+    if (!isConfigPortalRunning) return;
     dnsServer.processNextRequest();
     webServer.handleClient();
 }
