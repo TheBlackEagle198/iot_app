@@ -67,7 +67,7 @@ bool Module::initRadio() {
 
     // Connect to the mesh
     Serial.println("Connecting to the mesh...");
-    if (!mesh.begin(radioChannel, RF24_1MBPS, 100)) {
+    if (!mesh.begin(radioChannel, RF24_1MBPS, 1000)) {
         Serial.println("Mesh failed to start.");
         return false;
     } else {

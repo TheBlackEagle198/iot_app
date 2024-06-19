@@ -1,19 +1,23 @@
 #include <MQTT.h>
-#include <ESP8266WebServer.h>
+#include <WebServer.h>
 #include "RF24Network.h"
 #include "RF24.h"
 #include "RF24Mesh.h"
 #include <SPI.h>
 #include "GlobalConfig.h"
 #include "RadioType.h"
-#include "CronJob.h"
-#include "CronJobQueue.h"
 #include "Timer.h"
 #include "SendStrategy.h"
 #include "Preferences.h"
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
 #include <DNSServer.h>
 #include "strings.h"
+#include <esp_task_wdt.h>
+
+#define PIN_MISO  27  // GPIO27
+#define PIN_MOSI  26  // GPIO26
+#define PIN_SCK   25  // GIPO25
+#define PIN_CS    33  // GPIO33
 
 /// @brief MQTT setup
 #define INCOMING_TOPIC "B2H"
@@ -36,9 +40,10 @@
 #define CONNECT_MODE_EXPIRATION 20000
 
 /// @brief pin setup
-#define PIN_RADIO_CE 4
-#define PIN_RADIO_CNS 2
-#define PIN_CONNECT_BUTTON 5
+#define PIN_RADIO_CE GPIO_NUM_21
+#define PIN_RADIO_CNS GPIO_NUM_22
+#define PIN_CONNECT_BUTTON GPIO_NUM_35
+SPIClass hspi(HSPI);
 
 // global constants ************************************************************
 const String hubID = "00:26:85:22";
@@ -62,7 +67,7 @@ enum class WiFiConnectionStatus
     NO_MQTT,
     MQTT_CONNECTING,
     CONNECTED
-} currentState;
+} volatile currentState;
 
 template <int MAX_SIZE>
 class GlobalToNodeIdsMap
@@ -135,7 +140,6 @@ WiFiClient wifiNetworkClient;
 MQTTClient mqttClient;
 // ^^ mqtt variables
 GlobalToNodeIdsMap<255> globalToNodeIdsMap;
-CronJobQueue<10> cronJobs;
 
 uint8_t radioChannel = 0;
 
@@ -157,22 +161,22 @@ Timer wifiConnectionTimer(WIFI_CONNECTION_TIMEOUT);
 Timer mqttConnectionTimer(MQTT_CONNECTION_TIMEOUT);
 IPAddress apIP(192, 168, 1, 4);
 DNSServer dnsServer;
-ESP8266WebServer webServer(80);
+WebServer webServer(80);
 
-bool ranOnce = false;
+volatile bool ranOnce = false;
 
-bool isHTTPServerRunning = false;
-bool isDNSServerRunning = false;
-bool isConfigPortalRunning = false;
+volatile bool isHTTPServerRunning = false;
+volatile bool isDNSServerRunning = false;
+volatile bool isConfigPortalRunning = false;
 
-bool shouldTryWiFi = false;
-bool shouldTryMqtt = false;
+volatile bool shouldTryWiFi = false;
+volatile bool shouldTryMqtt = false;
 
-bool triedWiFiConfig = false;
-bool triedMqttConfig = false;
+volatile bool triedWiFiConfig = false;
+volatile bool triedMqttConfig = false;
 
-bool isMQTTConnected = false;
-bool isWiFiConnected = false;
+volatile bool isMQTTConnected = false;
+volatile bool isWiFiConnected = false;
 
 byte mqttAttempts = 0;
 bool isInConnectMode = false;
@@ -214,6 +218,9 @@ void initCronJobs();
 
 CommandType getCommand(String &commandString);
 
+void runRadio(void* pvParameters);
+void runButton(void* pvParams);
+void checkConnectModeExpired(void* pvParams);
 void switchState(WiFiConnectionStatus newState);
 bool connectToBroker();
 void startDNS();
@@ -226,14 +233,18 @@ void handleMqttRoute();
 void handleHomeRoute();
 void initHttpServer();
 void resetBrokerFSM(bool clearStoredData = false);
-void startPortal(WiFiMode wifiMode);
+void startPortal(wifi_mode_t wifiMode);
 void runPortal();
 void storeWiFi();
 void storeMQTT();
 void tryStoredWiFi();
 void tryStoredMQTT();
-void runFSM();
+void runFSM(void* pvParameters);
 
+TaskHandle_t fsmTask;
+TaskHandle_t radioTask;
+TaskHandle_t btnTask;
+TaskHandle_t connectModeExpiredTask;
 // main program ***************************************************************
 void setup()
 {
@@ -242,6 +253,8 @@ void setup()
     {
     }
 #endif
+    hspi.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS); // SCK, MISO, MOSI, SS
+    esp_task_wdt_init(10, false); // Initialize the Task Watchdog Timer. The timeout is set to 10 seconds.
 
     Serial.begin(115200);
 
@@ -252,8 +265,6 @@ void setup()
 #endif
 
     initCronJobs();
-    initRadio();
-    currentState = WiFiConnectionStatus::NO_WIFI;
     initHttpServer();
 
     pinMode(PIN_CONNECT_BUTTON, INPUT_PULLUP);
@@ -261,24 +272,60 @@ void setup()
     Serial.println("Setup complete!");
 }
 
-void loop()
-{
-    cronJobs.runJobs();
-}
+void loop() {}
 // function definitions ********************************************************
 void initCronJobs()
 {
-    // deals with mqtt and wifi
-    cronJobs.addJob(new CronJob(10, []()
-                                { runFSM(); }));
-    // deals with radio
-    cronJobs.addJob(new CronJob(1, []()
-                                {
-        processRadioData();
+    xTaskCreatePinnedToCore(
+        runFSM,
+        "connection_fsm",
+        10000,
+        NULL,
+        1,
+        &fsmTask,
+        0);
+
+    xTaskCreatePinnedToCore(
+        runRadio,
+        "radio_task",
+        10000,
+        NULL,
+        1,
+        &radioTask,
+        1);
+
+    xTaskCreatePinnedToCore(
+        runButton,
+        "btn_task",
+        1000,
+        NULL,
+        1,
+        &btnTask,
+        1);
+    xTaskCreatePinnedToCore(
+        checkConnectModeExpired,
+        "connect_mode_expired_task",
+        1000,
+        NULL,
+        1,
+        &connectModeExpiredTask,
+        1);
+}
+
+void runRadio(void* pvParams) {
+    initRadio();
+
+    while (1) {
         mesh.update();
-        mesh.DHCP(); }));
-    cronJobs.addJob(new CronJob(1, []()
-                                {
+        mesh.DHCP();
+        processRadioData();
+        esp_task_wdt_reset();
+        delay(5);
+    }
+}
+
+void runButton(void* pvParams) {
+    while(1) {
         connectButtonCurrentState = digitalRead(PIN_CONNECT_BUTTON);
         if (connectButtonLastState == HIGH && connectButtonCurrentState == LOW) {
             longPressTimer.reset();
@@ -290,13 +337,21 @@ void initCronJobs()
                 connectModeExpirationTimer.reset();
             }
         }
-        connectButtonLastState = connectButtonCurrentState; }));
-    cronJobs.addJob(new CronJob(1, []()
-                                {
+        connectButtonLastState = connectButtonCurrentState;
+        esp_task_wdt_reset();
+        delay(5);
+    }
+}
+
+void checkConnectModeExpired(void* pvParams) {
+    while (1) {
         if (isInConnectMode && connectModeExpirationTimer.elapsed()) {
             Serial.println("Connect mode expired!");
             isInConnectMode = false;
-        } }));
+        } 
+        esp_task_wdt_reset();
+        delay(5);
+    }
 }
 
 int writeAttempts = 0;
@@ -411,7 +466,8 @@ void processRadioData()
     {
         String topic(hubID + "/" + OUTGOING_TOPIC + "/");
         RF24NetworkHeader header;
-        network.peek(header);
+        uint16_t msg_len;
+        msg_len = network.peek(header);
 
         Serial.println("Received radio message!");
         Serial.println(header.toString());
@@ -452,6 +508,12 @@ void processRadioData()
         globalToNodeIdsMap.getByNodeID(
             mesh.getNodeID(header.from_node),
             currentGID);
+        if (currentGID == 0) {
+            uint8_t tempBuffer[msg_len];
+            Serial.println("Node id not found in map; ignore the message!");
+            network.read(header, tempBuffer, msg_len);
+            return;
+        }
         topic += globalIdToString(currentGID) + "/";
         String brokerMessage;
         IncomingMessage incomingMsg;
@@ -531,6 +593,8 @@ void initRadio()
         // Connect to the mesh
         Serial.print("Checking channel ");
         Serial.println(i);
+        radio.begin(&hspi);
+
         if (!mesh.begin(i, RF24_1MBPS, 5000U))
         {
             Serial.println("Available!");
@@ -740,11 +804,14 @@ void handleMqttRoute()
 {
     if (webServer.method() == HTTP_POST)
     {
+        Serial.println("req: POST");
+        Serial.println((uint8_t)currentState);
         webServer.sendHeader("Location", "/", true);
         webServer.send(302, "text/plain", "");
         if (currentState == WiFiConnectionStatus::NO_MQTT)
         {
             shouldTryMqtt = true;
+            Serial.println("req: Setting mqtt data");
             memset(mqttServer, 0, MAX_MQTT_SERVER);
             memset(mqttUser, 0, MAX_MQTT_USER);
             memset(mqttPassword, 0, MAX_MQTT_PASSWORD);
@@ -846,7 +913,7 @@ void resetBrokerFSM(bool clearStoredData)
     }
 }
 
-void startPortal(WiFiMode wifiMode)
+void startPortal(wifi_mode_t wifiMode)
 {
     if (isConfigPortalRunning) return;
     WiFi.mode(wifiMode);
@@ -947,151 +1014,162 @@ void tryStoredMQTT()
     triedMqttConfig = true;
 }
 
-void runFSM()
+void runFSM(void* pvParameters)
 {
-    switch (currentState)
-    {
-    case WiFiConnectionStatus::NO_WIFI:
-        if (!ranOnce)
+    (void)pvParameters;
+    // esp_task_wdt_init(3, false);
+
+    Serial.print("fsm task running on core ");
+    Serial.println(xPortGetCoreID());
+    currentState = WiFiConnectionStatus::NO_WIFI;
+    while (1) {
+        switch (currentState)
         {
-            isWiFiConnected = false;
-            isMQTTConnected = false;
-            ranOnce = true;
-            shouldTryWiFi = false;
-            if (!triedWiFiConfig)
+        case WiFiConnectionStatus::NO_WIFI:
+            if (!ranOnce)
             {
-                tryStoredWiFi();
-                if (!shouldTryWiFi)
+                isWiFiConnected = false;
+                isMQTTConnected = false;
+                ranOnce = true;
+                shouldTryWiFi = false;
+                if (!triedWiFiConfig)
+                {
+                    tryStoredWiFi();
+                    if (!shouldTryWiFi)
+                    {
+                        startPortal(WIFI_AP);
+                    }
+                }
+                else
                 {
                     startPortal(WIFI_AP);
                 }
             }
-            else
+            if (shouldTryWiFi)
             {
-                startPortal(WIFI_AP);
+                shouldTryWiFi = false;
+                wifiConnectionTimer.reset();
+                Serial.print("Connecting to WiFi [");
+                Serial.print(ssid);
+                Serial.print(", ");
+                Serial.print(wifiPassword);
+                Serial.println("]");
+                WiFi.begin(ssid, wifiPassword);
+                switchState(WiFiConnectionStatus::WIFI_CONNECTING);
             }
-        }
-        if (shouldTryWiFi)
-        {
-            shouldTryWiFi = false;
-            wifiConnectionTimer.reset();
-            Serial.print("Connecting to WiFi [");
-            Serial.print(ssid);
-            Serial.print(", ");
-            Serial.print(wifiPassword);
-            Serial.println("]");
-            WiFi.begin(ssid, wifiPassword);
-            switchState(WiFiConnectionStatus::WIFI_CONNECTING);
-        }
-        runPortal();
-        break;
-    case WiFiConnectionStatus::WIFI_CONNECTING:
-        if (!ranOnce)
-        {
-            ranOnce = true;
-            isWiFiConnected = false;
-            wifiConnectionTimer.reset();
-        }
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            storeWiFi();
-            isWiFiConnected = true;
-            switchState(WiFiConnectionStatus::NO_MQTT);
-            return;
-        }
-        if (wifiConnectionTimer.elapsed())
-        {
-            switchState(WiFiConnectionStatus::NO_WIFI);
-            return;
-        }
-        break;
-    case WiFiConnectionStatus::NO_MQTT:
-        if (!ranOnce)
-        {
-            ranOnce = true;
-            shouldTryMqtt = false;
-            if (!triedMqttConfig)
+            runPortal();
+            break;
+        case WiFiConnectionStatus::WIFI_CONNECTING:
+            if (!ranOnce)
             {
-                tryStoredMQTT();
-                if (!shouldTryMqtt)
+                ranOnce = true;
+                isWiFiConnected = false;
+                wifiConnectionTimer.reset();
+            }
+            if (WiFi.status() == WL_CONNECTED)
+            {
+                storeWiFi();
+                isWiFiConnected = true;
+                switchState(WiFiConnectionStatus::NO_MQTT);
+                break;
+            }
+            if (wifiConnectionTimer.elapsed())
+            {
+                switchState(WiFiConnectionStatus::NO_WIFI);
+                break;
+            }
+            break;
+        case WiFiConnectionStatus::NO_MQTT:
+            if (!ranOnce)
+            {
+                ranOnce = true;
+                shouldTryMqtt = false;
+                if (!triedMqttConfig)
+                {   
+                    tryStoredMQTT();
+                    if (!shouldTryMqtt)
+                    {
+                        startPortal(WIFI_AP_STA);
+                    }
+                }
+                else
                 {
                     startPortal(WIFI_AP_STA);
                 }
             }
-            else
-            {
-                startPortal(WIFI_AP_STA);
-            }
-        }
-        if (WiFi.status() != WL_CONNECTED)
-        {
-            switchState(WiFiConnectionStatus::NO_WIFI);
-            return;
-        }
-        if (shouldTryMqtt)
-        {
-            shouldTryMqtt = false;
-            switchState(WiFiConnectionStatus::MQTT_CONNECTING);
-            return;
-        }
-        runPortal();
-        break;
-    case WiFiConnectionStatus::MQTT_CONNECTING:
-        if (!ranOnce)
-        {
-            ranOnce = true;
-            stopPortal();
-            isMQTTConnected = false;
-            mqttAttempts = 0;
-            mqttClient.onMessage(onMqttMsg);
-            mqttClient.begin(mqttServer, wifiNetworkClient);
-            mqttClient.setWill((hubID + "/status").c_str(), "offline", true, 1);
-            mqttConnectionTimer.reset();
-        }
-        if (mqttConnectionTimer.elapsed())
-        {
-            mqttConnectionTimer.reset();
-            mqttAttempts++;
-            if (connectToBroker())
-            {
-                storeMQTT();
-                isMQTTConnected = true;
-                switchState(WiFiConnectionStatus::CONNECTED);
-                return;
-            }
-        }
-        if (mqttAttempts > MQTT_MAX_RETRIES)
-        {
-            switchState(WiFiConnectionStatus::NO_MQTT);
-            return;
-        }
-        break;
-    case WiFiConnectionStatus::CONNECTED:
-        if (!ranOnce)
-        {
-            ranOnce = true;
-            stopPortal();
-            mqttClient.publish((hubID + "/status").c_str(), "online", true, 1);
-            mqttClient.subscribe(hubID + "/" + INCOMING_TOPIC + "/#");
-        }
-        if (!mqttClient.loop())
-        {
-            Serial.println("MQTT connection lost! Attempting to reconnect...");
-            // the mqtt client connection has been lost
-            // check the wifi connection and reconnect if necessary
             if (WiFi.status() != WL_CONNECTED)
             {
-                Serial.print("WiFi connection lost! Current status: ");
-                Serial.println(WiFi.status());
                 switchState(WiFiConnectionStatus::NO_WIFI);
-                return;
+                break;
             }
-            else
+            if (shouldTryMqtt)
             {
+                shouldTryMqtt = false;
                 switchState(WiFiConnectionStatus::MQTT_CONNECTING);
-                return;
+                break;
             }
+            runPortal();
+            break;
+        case WiFiConnectionStatus::MQTT_CONNECTING:
+            if (!ranOnce)
+            {
+                ranOnce = true;
+                stopPortal();
+                isMQTTConnected = false;
+                mqttAttempts = 0;
+                mqttClient.onMessage(onMqttMsg);
+                mqttClient.begin(mqttServer, wifiNetworkClient);
+                mqttClient.setWill((hubID + "/status").c_str(), "offline", true, 1);
+                mqttConnectionTimer.reset();
+            }
+            if (mqttConnectionTimer.elapsed())
+            {
+                mqttConnectionTimer.reset();
+                mqttAttempts++;
+                if (connectToBroker())
+                {
+                    storeMQTT();
+                    isMQTTConnected = true;
+                    switchState(WiFiConnectionStatus::CONNECTED);
+                    break;
+                }
+            }
+            if (mqttAttempts > MQTT_MAX_RETRIES)
+            {
+                switchState(WiFiConnectionStatus::NO_MQTT);
+                break;
+            }
+            break;
+        case WiFiConnectionStatus::CONNECTED:
+            if (!ranOnce)
+            {
+                ranOnce = true;
+                stopPortal();
+                mqttClient.publish((hubID + "/status").c_str(), "online", true, 1);
+                mqttClient.subscribe(hubID + "/" + INCOMING_TOPIC + "/#");
+            }
+            if (!mqttClient.loop())
+            {
+                Serial.println("MQTT connection lost! Attempting to reconnect...");
+                // the mqtt client connection has been lost
+                // check the wifi connection and reconnect if necessary
+                if (WiFi.status() != WL_CONNECTED)
+                {
+                    Serial.print("WiFi connection lost! Current status: ");
+                    Serial.println(WiFi.status());
+                    switchState(WiFiConnectionStatus::NO_WIFI);
+                    break;
+                }
+                else
+                {
+                    switchState(WiFiConnectionStatus::MQTT_CONNECTING);
+                    break;
+                }
+            }
+            break;
         }
-        break;
+        esp_task_wdt_reset();
+        delay(10);
+        // vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
