@@ -639,8 +639,7 @@ void processRadioData()
 
         String subTopic;
 
-        if (header.type == (unsigned char)RadioType::GID_NEGOTIATION)
-        { //  && isInConnectMode
+        if (header.type == (unsigned char)RadioType::GID_NEGOTIATION && isInConnectMode){
             GLOBAL_ID_T GID;
             network.read(header, &GID, sizeof(GID));
             Serial.print("Got a node id request from a module with gid 0x");
