@@ -13,11 +13,14 @@
 #include <DNSServer.h>
 #include "strings.h"
 #include <esp_task_wdt.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <TFT_eSPI.h>
 
-#define PIN_MISO  27  // GPIO27
-#define PIN_MOSI  26  // GPIO26
-#define PIN_SCK   25  // GIPO25
-#define PIN_CS    33  // GPIO33
+#define PIN_RADIO_MISO  27  // GPIO27
+#define PIN_RADIO_MOSI  26  // GPIO26
+#define PIN_RADIO_SCK   25  // GIPO25
+#define PIN_RADIO_CS    33  // GPIO33
 
 /// @brief MQTT setup
 #define INCOMING_TOPIC "B2H"
@@ -38,6 +41,10 @@
 
 #define LONG_PRESS_TIME 1000
 #define CONNECT_MODE_EXPIRATION 20000
+#define HORIZONTAL_SPACING 5
+#define VERTICAL_SPACING 20
+#define CIRCLE_RADIUS 5
+#define TEXT_TOP_MARGIN 30
 
 /// @brief pin setup
 #define PIN_RADIO_CE GPIO_NUM_21
@@ -51,6 +58,25 @@ const String hubID = "00:26:85:22";
 const String apSSID = "HUB_" + hubID + "_AP";
 const String apPassword = "password";
 
+esp_event_loop_handle_t updateDisplayLoop;
+ESP_EVENT_DEFINE_BASE(UPDATE_DISPLAY);
+
+enum DisplayItem {
+    WIFI,
+    MQTT,
+    RADIO,
+    CONNECT_MODE,
+    DISPLAY_ITEM_COUNT
+};
+
+enum class DisplayEvent {
+    WIFI_ON,
+    MQTT_ON,
+    RADIO_ON,
+    CONNECT_MODE_ON,
+    CONNECT_MODE_OFF,
+};
+
 enum class CommandType
 {
     FORCE_UPDATE,
@@ -59,6 +85,7 @@ enum class CommandType
     CHANGE_DELAY,
     LAST
 };
+auto tft = TFT_eSPI();
 
 enum class WiFiConnectionStatus
 {
@@ -185,7 +212,19 @@ uint8_t connectButtonLastState = HIGH;
 Timer connectModeExpirationTimer(CONNECT_MODE_EXPIRATION);
 Timer longPressTimer(LONG_PRESS_TIME);
 
+const char* display_texts[] = {
+    "WiFi",
+    "MQTT",
+    "Radio",
+    "Connect Mode"
+};
+
 // function declarations *******************************************************
+
+void updateCircle(DisplayItem item, uint32_t color);
+void updateDisplayHandler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
+void drawItem(DisplayItem item);
+void displayTaskFn(void* pvParams);
 
 /// @brief writes a message to the mesh
 /// @param[in] data - the message to be sent via radio mesh
@@ -245,6 +284,7 @@ TaskHandle_t fsmTask;
 TaskHandle_t radioTask;
 TaskHandle_t btnTask;
 TaskHandle_t connectModeExpiredTask;
+TaskHandle_t displayTask;
 // main program ***************************************************************
 void setup()
 {
@@ -253,7 +293,7 @@ void setup()
     {
     }
 #endif
-    hspi.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS); // SCK, MISO, MOSI, SS
+    hspi.begin(PIN_RADIO_SCK, PIN_RADIO_MISO, PIN_RADIO_MOSI, PIN_RADIO_CS); // SCK, MISO, MOSI, SS
     esp_task_wdt_init(10, false); // Initialize the Task Watchdog Timer. The timeout is set to 10 seconds.
 
     Serial.begin(115200);
@@ -310,9 +350,107 @@ void initCronJobs()
         1,
         &connectModeExpiredTask,
         1);
+
+    xTaskCreatePinnedToCore(
+        displayTaskFn,
+        "display_update_task",
+        10000,
+        NULL,
+        1,
+        &displayTask,
+        1);
+}
+
+void updateCircle(DisplayItem item, uint32_t color) {
+    tft.fillCircle(
+        CIRCLE_RADIUS + HORIZONTAL_SPACING,
+        item * VERTICAL_SPACING + CIRCLE_RADIUS + TEXT_TOP_MARGIN,
+        CIRCLE_RADIUS, color);
+}
+
+void updateDisplayHandler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data) {
+    DisplayEvent event = (DisplayEvent)id;
+    switch (event) {
+        case DisplayEvent::WIFI_ON:
+            updateCircle(DisplayItem::WIFI, TFT_GREEN);
+            Serial.println("WiFi is on");
+            break;
+        case DisplayEvent::MQTT_ON:
+            updateCircle(DisplayItem::MQTT, TFT_GREEN);
+            Serial.println("MQTT is on");
+            break;
+        case DisplayEvent::RADIO_ON:
+            updateCircle(DisplayItem::RADIO, TFT_GREEN);
+            Serial.println("Radio is on");
+            break;
+        case DisplayEvent::CONNECT_MODE_ON:
+            updateCircle(DisplayItem::CONNECT_MODE, TFT_GREEN);
+            Serial.println("Connect mode is on");
+            break;
+        case DisplayEvent::CONNECT_MODE_OFF:
+            updateCircle(DisplayItem::CONNECT_MODE, TFT_RED);
+            Serial.println("Connect mode is off");
+            break;
+        default:
+            break;
+    }
+}
+
+void drawItem(DisplayItem item) {
+    updateCircle(item, TFT_RED);
+    tft.setCursor(2*CIRCLE_RADIUS + 2*HORIZONTAL_SPACING, item * VERTICAL_SPACING + CIRCLE_RADIUS + TEXT_TOP_MARGIN);
+    tft.print(display_texts[item]);
+}
+
+void initDisplay() {
+    tft.init();
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(1);
+    for (int i = 0; i < DISPLAY_ITEM_COUNT; i++) {
+        drawItem((DisplayItem)i);
+    }
+}
+
+void displayTaskFn(void* pvParams) {
+    // setup the event loop
+    esp_event_loop_args_t updateDisplayLoopArgs = {
+        .queue_size = 10,
+        .task_name = "update_display_task",
+        .task_priority = 1,
+        .task_stack_size = 10000,
+        .task_core_id = 0
+    };
+
+    esp_event_loop_create(&updateDisplayLoopArgs, &updateDisplayLoop);
+
+    // register the handler
+    esp_event_handler_instance_register_with(
+        updateDisplayLoop,
+        UPDATE_DISPLAY,
+        ESP_EVENT_ANY_ID,
+        updateDisplayHandler,
+        NULL,
+        NULL
+    );
+
+    // initialize the tft display
+    initDisplay();
+
+    // allow the radio and fsm tasks to run
+    xTaskNotifyGive(radioTask);
+    xTaskNotifyGive(fsmTask);
+
+    // run the loop
+    while (1) {
+        esp_event_loop_run(updateDisplayLoop, 100);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
 }
 
 void runRadio(void* pvParams) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
     initRadio();
 
     while (1) {
@@ -333,7 +471,15 @@ void runButton(void* pvParams) {
             if (longPressTimer.elapsed()) {
                 Serial.println("Long press detected");
                 isInConnectMode = true;
-                factoryReset();
+                ESP_ERROR_CHECK(
+                    esp_event_post_to(
+                        updateDisplayLoop,
+                        UPDATE_DISPLAY,
+                        (int32_t)DisplayEvent::CONNECT_MODE_ON,
+                        nullptr,
+                        0,
+                        portMAX_DELAY)
+                );
                 connectModeExpirationTimer.reset();
             }
         }
@@ -348,6 +494,15 @@ void checkConnectModeExpired(void* pvParams) {
         if (isInConnectMode && connectModeExpirationTimer.elapsed()) {
             Serial.println("Connect mode expired!");
             isInConnectMode = false;
+            ESP_ERROR_CHECK(
+                esp_event_post_to(
+                    updateDisplayLoop,
+                    UPDATE_DISPLAY,
+                    (int32_t)DisplayEvent::CONNECT_MODE_OFF,
+                    nullptr,
+                    0,
+                    portMAX_DELAY)
+            );
         } 
         esp_task_wdt_reset();
         delay(5);
@@ -619,6 +774,15 @@ void initRadio()
     }
 
     radio.setPALevel(RF24_PA_MIN, 0);
+    ESP_ERROR_CHECK(
+        esp_event_post_to(
+            updateDisplayLoop,
+            UPDATE_DISPLAY,
+            (int32_t)DisplayEvent::RADIO_ON,
+            nullptr,
+            0,
+            portMAX_DELAY)
+    );
 }
 
 String globalIdToString(GLOBAL_ID_T gid)
@@ -999,7 +1163,7 @@ void tryStoredMQTT()
 void runFSM(void* pvParameters)
 {
     (void)pvParameters;
-    // esp_task_wdt_init(3, false);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
     Serial.print("fsm task running on core ");
     Serial.println(xPortGetCoreID());
@@ -1064,6 +1228,15 @@ void runFSM(void* pvParameters)
         case WiFiConnectionStatus::NO_MQTT:
             if (!ranOnce)
             {
+                ESP_ERROR_CHECK(
+                    esp_event_post_to(
+                        updateDisplayLoop,
+                        UPDATE_DISPLAY,
+                        (int32_t)DisplayEvent::WIFI_ON,
+                        nullptr,
+                        0,
+                        portMAX_DELAY)
+                );
                 ranOnce = true;
                 shouldTryMqtt = false;
                 if (!triedMqttConfig)
@@ -1125,6 +1298,15 @@ void runFSM(void* pvParameters)
         case WiFiConnectionStatus::CONNECTED:
             if (!ranOnce)
             {
+                ESP_ERROR_CHECK(
+                    esp_event_post_to(
+                        updateDisplayLoop,
+                        UPDATE_DISPLAY,
+                        (int32_t)DisplayEvent::MQTT_ON,
+                        nullptr,
+                        0,
+                        portMAX_DELAY)
+                );
                 ranOnce = true;
                 stopPortal();
                 mqttClient.publish((hubID + "/status").c_str(), "online", true, 1);
