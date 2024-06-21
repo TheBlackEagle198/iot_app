@@ -48,7 +48,7 @@ SPIClass hspi(HSPI);
 // global constants ************************************************************
 const String hubID = "00:26:85:22";
 
-const String apSSID = "HUB" + hubID + "_AP";
+const String apSSID = "HUB_" + hubID + "_AP";
 const String apPassword = "password";
 
 enum class CommandType
@@ -232,8 +232,8 @@ void handleWiFiRoute();
 void handleMqttRoute();
 void handleHomeRoute();
 void initHttpServer();
-void resetBrokerFSM(bool clearStoredData = false);
 void startPortal(wifi_mode_t wifiMode);
+void factoryReset();
 void runPortal();
 void storeWiFi();
 void storeMQTT();
@@ -297,7 +297,7 @@ void initCronJobs()
     xTaskCreatePinnedToCore(
         runButton,
         "btn_task",
-        1000,
+        3000,
         NULL,
         1,
         &btnTask,
@@ -333,7 +333,7 @@ void runButton(void* pvParams) {
             if (longPressTimer.elapsed()) {
                 Serial.println("Long press detected");
                 isInConnectMode = true;
-                resetBrokerFSM(true);
+                factoryReset();
                 connectModeExpirationTimer.reset();
             }
         }
@@ -882,35 +882,17 @@ void initHttpServer()
     Serial.println(webServer.uri()); });
 }
 
-void resetBrokerFSM(bool clearStoredData)
+void factoryReset()
 {
-    Serial.println("Reseting broker FSM");
-    stopPortal();
-    switchState(WiFiConnectionStatus::NO_WIFI);
-    isHTTPServerRunning = false;
-    isDNSServerRunning = false;
-    isConfigPortalRunning = false;
-    shouldTryWiFi = false;
-    shouldTryMqtt = false;
-    triedWiFiConfig = false;
-    triedMqttConfig = false;
-
-    if (WiFi.status() == WL_CONNECTED) {
-        WiFi.disconnect();
-    }
-
-    if (clearStoredData)
+    if (preferences.begin(PREFERENCES_NAMESPACE))
     {
-        if (preferences.begin(PREFERENCES_NAMESPACE))
-        {
-            preferences.clear();
-        }
-        else
-        {
-            Serial.println("Failed to open preferences!");
-        }
-        preferences.end();
+        preferences.clear();
     }
+    else
+    {
+        Serial.println("Failed to open preferences!");
+    }
+    ESP.restart();
 }
 
 void startPortal(wifi_mode_t wifiMode)
