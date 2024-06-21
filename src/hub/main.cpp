@@ -17,11 +17,6 @@
 #include "freertos/task.h"
 #include <TFT_eSPI.h>
 
-#define PIN_RADIO_MISO  27  // GPIO27
-#define PIN_RADIO_MOSI  26  // GPIO26
-#define PIN_RADIO_SCK   25  // GIPO25
-#define PIN_RADIO_CS    33  // GPIO33
-
 /// @brief MQTT setup
 #define INCOMING_TOPIC "B2H"
 #define OUTGOING_TOPIC "H2B"
@@ -31,26 +26,36 @@
 #define COMMAND_CHANGE_SEND_INTERVAL "send_interval"
 #define COMMAND_CHANGE_THRESHOLD "threshold"
 
+/// @brief storage setup
 #define MAX_SSID 20
 #define MAX_WIFi_PASSWORD 20
 #define MAX_MQTT_SERVER 20
 #define MAX_MQTT_USER 20
 #define MAX_MQTT_PASSWORD 20
-
 #define PREFERENCES_NAMESPACE "hub"
 
+
+/// @brief timers setup
 #define LONG_PRESS_TIME 1000
 #define CONNECT_MODE_EXPIRATION 20000
+#define WIFI_CONNECTION_TIMEOUT 7500
+#define MQTT_CONNECTION_TIMEOUT 300
+
+/// @brief display setup
 #define HORIZONTAL_SPACING 5
 #define VERTICAL_SPACING 20
 #define CIRCLE_RADIUS 5
 #define TEXT_TOP_MARGIN 30
 
 /// @brief pin setup
-#define PIN_RADIO_CE GPIO_NUM_21
-#define PIN_RADIO_CNS GPIO_NUM_22
-#define PIN_CONNECT_BUTTON GPIO_NUM_35
-SPIClass hspi(HSPI);
+#define PIN_RADIO_CE             GPIO_NUM_21
+#define PIN_RADIO_CNS            GPIO_NUM_22
+#define PIN_CONNECT_BUTTON       GPIO_NUM_35
+#define PIN_FACTORY_RESET_BUTTON GPIO_NUM_0
+#define PIN_RADIO_MISO           GPIO_NUM_27
+#define PIN_RADIO_MOSI           GPIO_NUM_26
+#define PIN_RADIO_SCK            GPIO_NUM_25
+#define PIN_RADIO_CS             GPIO_NUM_33
 
 // global constants ************************************************************
 const String hubID = "00:26:85:22";
@@ -58,8 +63,16 @@ const String hubID = "00:26:85:22";
 const String apSSID = "HUB_" + hubID + "_AP";
 const String apPassword = "password";
 
-esp_event_loop_handle_t updateDisplayLoop;
-ESP_EVENT_DEFINE_BASE(UPDATE_DISPLAY);
+const byte MQTT_MAX_RETRIES = 5;
+const byte DNS_PORT = 53;
+
+/// @brief text to display on the tft screen
+const char* display_texts[] = {
+    "WiFi",
+    "MQTT",
+    "Radio",
+    "Connect Mode"
+};
 
 enum DisplayItem {
     WIFI,
@@ -85,7 +98,6 @@ enum class CommandType
     CHANGE_DELAY,
     LAST
 };
-auto tft = TFT_eSPI();
 
 enum class WiFiConnectionStatus
 {
@@ -159,20 +171,18 @@ public:
 };
 
 // global variables ***********************************************************
+// radio variables
 RF24 radio(PIN_RADIO_CE, PIN_RADIO_CNS);
 RF24Network network(radio);
 RF24Mesh mesh(radio, network);
-// ^^ rf mesh variables
+uint8_t radioChannel = 0;
+SPIClass hspi(HSPI); // used for spi radio communication
+int writeAttempts = 0;
+
+// internet-related variables
 WiFiClient wifiNetworkClient;
 MQTTClient mqttClient;
-// ^^ mqtt variables
 GlobalToNodeIdsMap<255> globalToNodeIdsMap;
-
-uint8_t radioChannel = 0;
-
-int last = 0;
-Preferences preferences;
-
 char ssid[MAX_SSID];
 char wifiPassword[MAX_WIFi_PASSWORD];
 
@@ -180,17 +190,11 @@ char mqttServer[MAX_MQTT_SERVER];
 char mqttUser[MAX_MQTT_USER];
 char mqttPassword[MAX_MQTT_PASSWORD];
 
-const uint32_t WIFI_CONNECTION_TIMEOUT = 7500;
-const uint32_t MQTT_CONNECTION_TIMEOUT = 300;
-const byte MQTT_MAX_RETRIES = 5;
-const byte DNS_PORT = 53;
-Timer wifiConnectionTimer(WIFI_CONNECTION_TIMEOUT);
-Timer mqttConnectionTimer(MQTT_CONNECTION_TIMEOUT);
 IPAddress apIP(192, 168, 1, 4);
 DNSServer dnsServer;
 WebServer webServer(80);
 
-volatile bool ranOnce = false;
+byte mqttAttempts = 0;
 
 volatile bool isHTTPServerRunning = false;
 volatile bool isDNSServerRunning = false;
@@ -205,19 +209,30 @@ volatile bool triedMqttConfig = false;
 volatile bool isMQTTConnected = false;
 volatile bool isWiFiConnected = false;
 
-byte mqttAttempts = 0;
-bool isInConnectMode = false;
-uint8_t connectButtonCurrentState = LOW;
-uint8_t connectButtonLastState = HIGH;
+/// @brief Timers 
+Timer wifiConnectionTimer(WIFI_CONNECTION_TIMEOUT);
+Timer mqttConnectionTimer(MQTT_CONNECTION_TIMEOUT);
 Timer connectModeExpirationTimer(CONNECT_MODE_EXPIRATION);
 Timer longPressTimer(LONG_PRESS_TIME);
 
-const char* display_texts[] = {
-    "WiFi",
-    "MQTT",
-    "Radio",
-    "Connect Mode"
-};
+/// @brief task handles
+TaskHandle_t fsmTask;
+TaskHandle_t radioTask;
+TaskHandle_t btnTask;
+TaskHandle_t connectModeExpiredTask;
+TaskHandle_t displayTask;
+
+/// @brief others
+Preferences preferences;
+auto tft = TFT_eSPI();
+
+esp_event_loop_handle_t updateDisplayLoop;
+ESP_EVENT_DEFINE_BASE(UPDATE_DISPLAY);
+volatile bool ranOnce = false;
+
+bool isInConnectMode = false;
+uint8_t connectButtonCurrentState = LOW;
+uint8_t connectButtonLastState = HIGH;
 
 // function declarations *******************************************************
 
@@ -252,8 +267,8 @@ String globalIdToString(GLOBAL_ID_T gid);
 /// @brief Converts a string with hex values separated by colons to a global id
 GLOBAL_ID_T stringToGlobalId(const String &buffer);
 
-/// @brief Initializes the cron jobs
-void initCronJobs();
+/// @brief Initializes tasks
+void initTasks();
 
 CommandType getCommand(String &commandString);
 
@@ -280,11 +295,6 @@ void tryStoredWiFi();
 void tryStoredMQTT();
 void runFSM(void* pvParameters);
 
-TaskHandle_t fsmTask;
-TaskHandle_t radioTask;
-TaskHandle_t btnTask;
-TaskHandle_t connectModeExpiredTask;
-TaskHandle_t displayTask;
 // main program ***************************************************************
 void setup()
 {
@@ -304,17 +314,15 @@ void setup()
     }
 #endif
 
-    initCronJobs();
+    initTasks();
     initHttpServer();
-
-    pinMode(PIN_CONNECT_BUTTON, INPUT_PULLUP);
 
     Serial.println("Setup complete!");
 }
 
 void loop() {}
 // function definitions ********************************************************
-void initCronJobs()
+void initTasks()
 {
     xTaskCreatePinnedToCore(
         runFSM,
@@ -463,6 +471,8 @@ void runRadio(void* pvParams) {
 }
 
 void runButton(void* pvParams) {
+    pinMode(PIN_CONNECT_BUTTON, INPUT_PULLUP);
+
     while(1) {
         connectButtonCurrentState = digitalRead(PIN_CONNECT_BUTTON);
         if (connectButtonLastState == HIGH && connectButtonCurrentState == LOW) {
@@ -509,7 +519,6 @@ void checkConnectModeExpired(void* pvParams) {
     }
 }
 
-int writeAttempts = 0;
 void safeWriteToMesh(const void *data, uint8_t msg_type, size_t size, uint8_t recvNodeId)
 {
     mesh.update();
