@@ -11,6 +11,12 @@
 #include "Preferences.h"
 #include <WiFi.h>
 #include <DNSServer.h>
+/* NOTE: 
+*    As of 28 June 2024, DNSServer library has some patches which did not 
+*  increment the library version, thus those updates need to be manually added
+*  in the library files.
+*  Depends on: https://github.com/espressif/arduino-esp32/commit/d91271019ce0fb545ed9c2b6f51d27c86520f273
+*/
 #include "strings.h"
 #include <esp_task_wdt.h>
 #include "freertos/FreeRTOS.h"
@@ -333,7 +339,7 @@ void initTasks()
     xTaskCreatePinnedToCore(
         runFSM,
         "connection_fsm",
-        30000,
+        90000,
         NULL,
         1,
         &fsmTask,
@@ -515,6 +521,7 @@ void runButton(void* pvParams) {
         factoryResetButtonCurrentState = digitalRead(PIN_FACTORY_RESET_BUTTON);
         if (factoryResetButtonLastState == HIGH && factoryResetButtonCurrentState == LOW) {
             factoryResetButtonTimer.reset();
+            heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
         } else if (factoryResetButtonCurrentState == HIGH && factoryResetButtonLastState == LOW) {
             if (factoryResetButtonTimer.elapsed()) {
                 Serial.println("Factory reset button on");
@@ -1092,13 +1099,14 @@ void factoryReset()
     {
         Serial.println("Failed to open preferences!");
     }
+    preferences.end();
     ESP.restart();
 }
 
 void startPortal(wifi_mode_t wifiMode)
 {
-    if (isConfigPortalRunning) return;
     WiFi.mode(wifiMode);
+    if (isConfigPortalRunning) return;
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
     WiFi.softAP(apSSID, apPassword);
     startWebServer();
@@ -1109,7 +1117,6 @@ void startPortal(wifi_mode_t wifiMode)
 void runPortal()
 {
     if (!isConfigPortalRunning) return;
-    dnsServer.processNextRequest();
     webServer.handleClient();
 }
 
@@ -1149,13 +1156,17 @@ void tryStoredWiFi()
     memset(ssid, 0, MAX_SSID);
     memset(wifiPassword, 0, MAX_WIFi_PASSWORD);
     // load wifi configuration from eeprom
-    if (preferences.begin(PREFERENCES_NAMESPACE))
+    if (preferences.begin(PREFERENCES_NAMESPACE, true))
     {
         Serial.println("Preferences opened");
-        preferences.getString("ssid", ssid, MAX_SSID);
-        Serial.println(ssid);
-        preferences.getString("wifiPassword", wifiPassword, MAX_WIFi_PASSWORD);
-        Serial.println(wifiPassword);
+        if (preferences.isKey("ssid") && preferences.isKey("wifiPassword")) {
+            preferences.getString("ssid", ssid, MAX_SSID);
+            Serial.println(ssid);
+            preferences.getString("wifiPassword", wifiPassword, MAX_WIFi_PASSWORD);
+            Serial.println(wifiPassword);
+        } else {
+            Serial.println("No WiFi credentials stored!");
+        }
     }
     else
     {
@@ -1177,11 +1188,15 @@ void tryStoredMQTT()
     memset(mqttUser, 0, MAX_MQTT_USER);
     memset(mqttPassword, 0, MAX_MQTT_PASSWORD);
     // load wifi configuration from eeprom
-    if (preferences.begin(PREFERENCES_NAMESPACE))
+    if (preferences.begin(PREFERENCES_NAMESPACE, true))
     {
-        preferences.getString("mqttServer", mqttServer, MAX_MQTT_SERVER);
-        preferences.getString("mqttUser", mqttUser, MAX_MQTT_USER);
-        preferences.getString("mqttPassword", mqttPassword, MAX_MQTT_PASSWORD);
+        if (preferences.isKey("mqttServer") && preferences.isKey("mqttUser") && preferences.isKey("mqttPassword")) {
+            preferences.getString("mqttServer", mqttServer, MAX_MQTT_SERVER);
+            preferences.getString("mqttUser", mqttUser, MAX_MQTT_USER);
+            preferences.getString("mqttPassword", mqttPassword, MAX_MQTT_PASSWORD);
+        } else {
+            Serial.println("No MQTT credentials stored!");
+        }
     }
     else
     {
@@ -1200,6 +1215,8 @@ void runFSM(void* pvParameters)
 {
     (void)pvParameters;
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    WiFi.persistent(false);
 
     Serial.print("fsm task running on core ");
     Serial.println(xPortGetCoreID());
@@ -1236,6 +1253,7 @@ void runFSM(void* pvParameters)
                 Serial.print(", ");
                 Serial.print(wifiPassword);
                 Serial.println("]");
+                WiFi.mode(WIFI_AP_STA);
                 WiFi.begin(ssid, wifiPassword);
                 switchState(WiFiConnectionStatus::WIFI_CONNECTING);
             }
