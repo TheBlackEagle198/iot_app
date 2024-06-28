@@ -85,7 +85,9 @@ enum DisplayItem {
 
 enum class DisplayEvent {
     WIFI_ON,
+    WIFI_OFF,
     MQTT_ON,
+    MQTT_OFF,
     RADIO_ON,
     CONNECT_MODE_ON,
     CONNECT_MODE_OFF,
@@ -385,11 +387,19 @@ void updateDisplayHandler(void* handler_args, esp_event_base_t base, int32_t id,
     switch (event) {
         case DisplayEvent::WIFI_ON:
             updateCircle(DisplayItem::WIFI, TFT_GREEN);
-            Serial.println("WiFi is on");
+            Serial.println("WiFi is connected");
+            break;
+        case DisplayEvent::WIFI_OFF:
+            updateCircle(DisplayItem::WIFI, TFT_RED);
+            Serial.println("WiFi is disconnected");
             break;
         case DisplayEvent::MQTT_ON:
             updateCircle(DisplayItem::MQTT, TFT_GREEN);
-            Serial.println("MQTT is on");
+            Serial.println("MQTT is connected");
+            break;
+        case DisplayEvent::MQTT_OFF:
+            updateCircle(DisplayItem::MQTT, TFT_RED);
+            Serial.println("MQTT is disconnected");
             break;
         case DisplayEvent::RADIO_ON:
             updateCircle(DisplayItem::RADIO, TFT_GREEN);
@@ -1281,6 +1291,15 @@ void runFSM(void* pvParameters)
             if (WiFi.status() != WL_CONNECTED)
             {
                 switchState(WiFiConnectionStatus::NO_WIFI);
+                ESP_ERROR_CHECK(
+                    esp_event_post_to(
+                        updateDisplayLoop,
+                        UPDATE_DISPLAY,
+                        (int32_t)DisplayEvent::WIFI_OFF,
+                        nullptr,
+                        0,
+                        portMAX_DELAY)
+                );
                 break;
             }
             if (shouldTryMqtt)
@@ -1318,6 +1337,15 @@ void runFSM(void* pvParameters)
             if (mqttAttempts > MQTT_MAX_RETRIES)
             {
                 switchState(WiFiConnectionStatus::NO_MQTT);
+                ESP_ERROR_CHECK(
+                    esp_event_post_to(
+                        updateDisplayLoop,
+                        UPDATE_DISPLAY,
+                        (int32_t)DisplayEvent::MQTT_OFF,
+                        nullptr,
+                        0,
+                        portMAX_DELAY)
+                );
                 break;
             }
             break;
