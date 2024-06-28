@@ -36,8 +36,9 @@
 
 
 /// @brief timers setup
-#define LONG_PRESS_TIME 1000
+#define CONNECT_MODE_LONG_PRESS_TIME 1000
 #define CONNECT_MODE_EXPIRATION 20000
+#define FACTORY_RESET_LONG_PRESS_TIME 10000
 #define WIFI_CONNECTION_TIMEOUT 7500
 #define MQTT_CONNECTION_TIMEOUT 300
 
@@ -213,7 +214,8 @@ volatile bool isWiFiConnected = false;
 Timer wifiConnectionTimer(WIFI_CONNECTION_TIMEOUT);
 Timer mqttConnectionTimer(MQTT_CONNECTION_TIMEOUT);
 Timer connectModeExpirationTimer(CONNECT_MODE_EXPIRATION);
-Timer longPressTimer(LONG_PRESS_TIME);
+Timer connectButtonTimer(CONNECT_MODE_LONG_PRESS_TIME);
+Timer factoryResetButtonTimer(FACTORY_RESET_LONG_PRESS_TIME);
 
 /// @brief task handles
 TaskHandle_t fsmTask;
@@ -233,6 +235,8 @@ volatile bool ranOnce = false;
 bool isInConnectMode = false;
 uint8_t connectButtonCurrentState = LOW;
 uint8_t connectButtonLastState = HIGH;
+uint8_t factoryResetButtonCurrentState = LOW;
+uint8_t factoryResetButtonLastState = HIGH;
 
 // function declarations *******************************************************
 
@@ -327,7 +331,7 @@ void initTasks()
     xTaskCreatePinnedToCore(
         runFSM,
         "connection_fsm",
-        10000,
+        30000,
         NULL,
         1,
         &fsmTask,
@@ -472,14 +476,16 @@ void runRadio(void* pvParams) {
 
 void runButton(void* pvParams) {
     pinMode(PIN_CONNECT_BUTTON, INPUT_PULLUP);
+    pinMode(PIN_FACTORY_RESET_BUTTON, INPUT_PULLUP);
 
     while(1) {
+        // connect button
         connectButtonCurrentState = digitalRead(PIN_CONNECT_BUTTON);
         if (connectButtonLastState == HIGH && connectButtonCurrentState == LOW) {
-            longPressTimer.reset();
+            connectButtonTimer.reset();
         } else if (connectButtonCurrentState == HIGH && connectButtonLastState == LOW) {
-            if (longPressTimer.elapsed()) {
-                Serial.println("Long press detected");
+            if (connectButtonTimer.elapsed()) {
+                Serial.println("Connect mode button on");
                 isInConnectMode = true;
                 ESP_ERROR_CHECK(
                     esp_event_post_to(
@@ -494,6 +500,18 @@ void runButton(void* pvParams) {
             }
         }
         connectButtonLastState = connectButtonCurrentState;
+
+        // factory reset button
+        factoryResetButtonCurrentState = digitalRead(PIN_FACTORY_RESET_BUTTON);
+        if (factoryResetButtonLastState == HIGH && factoryResetButtonCurrentState == LOW) {
+            factoryResetButtonTimer.reset();
+        } else if (factoryResetButtonCurrentState == HIGH && factoryResetButtonLastState == LOW) {
+            if (factoryResetButtonTimer.elapsed()) {
+                Serial.println("Factory reset button on");
+                factoryReset();
+            }
+        }
+        factoryResetButtonLastState = factoryResetButtonCurrentState;
         esp_task_wdt_reset();
         delay(5);
     }
